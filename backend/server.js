@@ -102,7 +102,7 @@ function banner() {
     console.log("   CamPay base:     " + (process.env.CAMPAY_BASE_URL || "https://demo.campay.net"));
     console.log("   MikroTik:        " + mhost + ":" + mport);
     console.log("   Allowed origins: " + Array.from(ALLOWED_ORIGINS).join(", "));
-    console.log("   Offers source:   MikroTik hotspot user-profiles (comment JSON)");
+    console.log("   Offers source:   SQLite database (offers.sqlite)");
     console.log("   Admin UI:        " + (process.env.ADMIN_PASSWORD ? "enabled at /admin/" : "disabled (set ADMIN_PASSWORD)"));
     console.log("================================================================");
 }
@@ -115,17 +115,7 @@ async function pingMikrotik() {
             return;
         }
         console.log("[startup] MikroTik OK. Profiles found: " + profiles.join(", "));
-        const offers = await mikrotik.listOffers({ force: true });
-        if (offers.length === 0) {
-            console.warn("[startup] No saleable offers found. Add a JSON comment to each profile (see README).");
-            return;
-        }
-        console.log("[startup] Saleable offers loaded from profiles:");
-        offers.forEach(o => console.log("     - " + o.id + " (profile: " + o.profile + ", " + o.price + " XAF, " + o.duration + ", " + o.speed + ")"));
-        const unconfigured = profiles.filter(p => !offers.some(o => o.profile === p));
-        if (unconfigured.length) {
-            console.log("[startup] Profiles without saleable comment (ignored): " + unconfigured.join(", "));
-        }
+        // Offers are now managed in SQLite, not MikroTik comments.
     } catch (err) {
         console.error("[startup] MikroTik connection FAILED:", err && err.message);
     }
