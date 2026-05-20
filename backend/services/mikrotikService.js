@@ -74,8 +74,14 @@ async function profileExists(name) {
     return names.indexOf(name) !== -1;
 }
 
-
-// All offer/metadata logic removed. Only profile listing, lookup, user creation, and formatRate remain.
+// Format bandwidth rate (e.g., 2000000 → "2 Mbps", 512000 → "512 Kbps")
+function formatRate(rate) {
+    if (!rate || isNaN(rate)) return "-";
+    rate = Number(rate);
+    if (rate >= 1e6) return (rate / 1e6).toFixed(rate % 1e6 === 0 ? 0 : 2) + " Mbps";
+    if (rate >= 1e3) return (rate / 1e3).toFixed(rate % 1e3 === 0 ? 0 : 2) + " Kbps";
+    return rate + " bps";
+}
 
 /* ---------- low-level connectivity test (for diagnostics) ---------- */
 
