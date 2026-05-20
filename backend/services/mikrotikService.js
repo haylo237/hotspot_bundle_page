@@ -143,6 +143,38 @@ async function findOffer(id) {
     return offers.find(o => o.id === String(id)) || null;
 }
 
+/* ---------- profile comment write (admin UI) ---------- */
+
+function invalidateProfileCache() {
+    _profileCache = null;
+}
+
+async function setProfileComment(name, comment) {
+    if (!name) return { ok: false, error: "missing profile name" };
+    const api = buildClient();
+    try {
+        await api.connect();
+        const rows = await api.write(["/ip/hotspot/user/profile/print", "?name=" + name]);
+        if (!rows || rows.length === 0) {
+            return { ok: false, error: "profile '" + name + "' not found" };
+        }
+        const id = rows[0][".id"];
+        if (!id) return { ok: false, error: "profile has no .id" };
+        await api.write([
+            "/ip/hotspot/user/profile/set",
+            "=.id="     + id,
+            "=comment=" + (comment == null ? "" : String(comment))
+        ]);
+        invalidateProfileCache();
+        return { ok: true };
+    } catch (err) {
+        console.error("[mikrotik] setProfileComment failed:", err && err.message);
+        return { ok: false, error: (err && err.message) || String(err) };
+    } finally {
+        try { api.close(); } catch (_) { /* ignore */ }
+    }
+}
+
 /* ---------- low-level connectivity test (for diagnostics) ---------- */
 
 async function tryConnect() {
@@ -190,6 +222,10 @@ module.exports = {
     profileExists,
     listOffers,
     findOffer,
+    parseProfileMeta,
+    formatRate,
+    setProfileComment,
+    invalidateProfileCache,
     createHotspotUser,
     tryConnect
 };

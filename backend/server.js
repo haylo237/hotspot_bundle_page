@@ -19,6 +19,7 @@ const cors    = require("cors");
 
 const hotspotRoutes     = require("./routes/hotspot");
 const diagnosticsRoutes = require("./routes/diagnostics");
+const adminRoutes       = require("./routes/admin");
 const mikrotik          = require("./services/mikrotikService");
 
 const app  = express();
@@ -77,6 +78,7 @@ app.get("/health", (_req, res) => {
 /* ---------- routes ---------- */
 app.use("/api/hotspot",      hotspotRoutes);
 app.use("/api/diagnostics",  diagnosticsRoutes);
+app.use("/admin",            adminRoutes);
 
 /* ---------- 404 / error handlers ---------- */
 app.use((req, res) => {
@@ -101,6 +103,7 @@ function banner() {
     console.log("   MikroTik:        " + mhost + ":" + mport);
     console.log("   Allowed origins: " + Array.from(ALLOWED_ORIGINS).join(", "));
     console.log("   Offers source:   MikroTik hotspot user-profiles (comment JSON)");
+    console.log("   Admin UI:        " + (process.env.ADMIN_PASSWORD ? "enabled at /admin/" : "disabled (set ADMIN_PASSWORD)"));
     console.log("================================================================");
 }
 
