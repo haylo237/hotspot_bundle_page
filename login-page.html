@@ -1,0 +1,223 @@
+<!--
+================================================================================
+  HAYLO INTERNET — Manual Hotspot Login Page (login-page.html)
+================================================================================
+  Purpose:
+    - A clean, simple page where the client manually types the username and
+      password generated after Campay payment.
+    - Submits directly to the MikroTik hotspot login endpoint.
+
+  Deployment:
+    - Upload as `login-page.html` into the MikroTik RouterOS hotspot folder.
+    - RouterOS will substitute $(link-login-only) and $(link-orig) at runtime.
+
+  Notes:
+    - This is the page that the "Login" button on success.html opens (via the
+      link_login URL passed from the backend).
+    - Pre-fills username/password if provided as ?username=&password= query.
+
+  >>>>> CHANGE: ISP_NAME, SUPPORT_PHONE here as needed. <<<<<
+================================================================================
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0b1023" />
+    <title>Login — HAYLO INTERNET</title>
+    <style>
+        *,*::before,*::after { box-sizing: border-box; margin:0; padding:0; }
+        html,body { height: 100%; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            color: #e8ecf8;
+            background: radial-gradient(1200px 800px at 10% -10%, #1b2a6b 0%, transparent 60%),
+                        radial-gradient(900px 700px at 110% 10%, #5a1bb1 0%, transparent 55%),
+                        linear-gradient(160deg, #05070f 0%, #0b1023 45%, #0a0a1f 100%);
+            min-height: 100vh;
+            display: grid; place-items: center;
+            padding: 20px;
+        }
+
+        .card {
+            width: 100%; max-width: 400px;
+            padding: 28px 24px;
+            border-radius: 22px;
+            background: rgba(255,255,255,0.06);
+            backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255,255,255,0.10);
+            box-shadow: 0 18px 40px rgba(0,0,0,0.4);
+            text-align: center;
+        }
+        .logo-mark {
+            width: 56px; height: 56px;
+            margin: 0 auto 14px;
+            border-radius: 14px;
+            background: linear-gradient(135deg, #4f8cff, #b14bff);
+            display: grid; place-items: center;
+            box-shadow: 0 8px 22px rgba(79,140,255,0.35);
+        }
+        .logo-mark svg { width: 30px; height: 30px; color: #fff; }
+        .brand {
+            font-size: 18px; font-weight: 800; letter-spacing: .6px; margin-bottom: 2px;
+        }
+        .tag { color: #9aa3c7; font-size: 12px; margin-bottom: 18px; }
+
+        form { text-align: left; }
+        label {
+            display: block;
+            font-size: 12px; color: #b6bedc; margin-bottom: 6px;
+            text-transform: uppercase; letter-spacing: .6px;
+        }
+        .field {
+            position: relative; margin-bottom: 14px;
+        }
+        .input {
+            width: 100%;
+            padding: 13px 14px;
+            background: rgba(0,0,0,0.25);
+            border: 1px solid rgba(255,255,255,0.12);
+            color: #fff;
+            border-radius: 12px;
+            font-size: 14px;
+            outline: none;
+            transition: border-color .15s ease, background .15s ease;
+        }
+        .input:focus {
+            border-color: rgba(79,140,255,0.6);
+            background: rgba(0,0,0,0.35);
+        }
+        .toggle-pass {
+            position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+            background: rgba(255,255,255,0.06);
+            border: 1px solid rgba(255,255,255,0.12);
+            color: #cfd6f0; cursor: pointer;
+            padding: 5px 8px; border-radius: 8px; font-size: 11px;
+        }
+        .toggle-pass:hover { background: rgba(255,255,255,0.12); }
+
+        .btn-login {
+            width: 100%;
+            margin-top: 6px;
+            padding: 13px;
+            border: none; cursor: pointer;
+            border-radius: 12px;
+            font-size: 14px; font-weight: 700;
+            color: #fff;
+            background: linear-gradient(135deg, #4f8cff, #b14bff);
+            box-shadow: 0 8px 22px rgba(79,140,255,0.35);
+            transition: filter .15s ease, transform .15s ease;
+        }
+        .btn-login:hover { filter: brightness(1.05); }
+        .btn-login:active { transform: translateY(1px); }
+
+        .error {
+            display: none;
+            margin-top: 10px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            background: rgba(248,113,113,0.12);
+            border: 1px solid rgba(248,113,113,0.40);
+            color: #fca5a5;
+            font-size: 12px;
+            text-align: left;
+        }
+        .error.show { display: block; }
+
+        .foot {
+            margin-top: 16px;
+            font-size: 12px; color: #8a93b7;
+        }
+        .foot a { color: #b6bedc; text-decoration: none; }
+        .foot a:hover { color: #fff; text-decoration: underline; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <div class="logo-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 12.55a11 11 0 0 1 14 0"/>
+            <path d="M1.5 9a16 16 0 0 1 21 0"/>
+            <path d="M8.5 16.05a6 6 0 0 1 7 0"/>
+            <circle cx="12" cy="20" r="1.2" fill="currentColor"/>
+        </svg>
+    </div>
+    <div class="brand" id="brandName">HAYLO INTERNET</div>
+    <div class="tag">Enter your credentials to connect</div>
+
+    <!-- ============================================================
+         MikroTik-compatible login form.
+         RouterOS substitutes $(link-login-only) and $(link-orig).
+         Hidden fields are required by the hotspot login system.
+         ============================================================ -->
+    <form name="login" action="$(link-login-only)" method="post" onsubmit="return beforeSubmit();">
+        <!-- Required MikroTik hidden fields -->
+        <input type="hidden" name="dst" value="$(link-orig)" />
+        <input type="hidden" name="popup" value="true" />
+
+        <div class="field">
+            <label for="username">Username</label>
+            <input class="input" type="text" id="username" name="username"
+                   autocomplete="username" autocapitalize="off" autocorrect="off"
+                   spellcheck="false" required />
+        </div>
+
+        <div class="field">
+            <label for="password">Password</label>
+            <input class="input" type="password" id="password" name="password"
+                   autocomplete="current-password" required />
+            <button type="button" class="toggle-pass" onclick="togglePass()">Show</button>
+        </div>
+
+        <button type="submit" class="btn-login">Connect</button>
+
+        <div class="error" id="errBox">Please enter both username and password.</div>
+    </form>
+
+    <div class="foot">
+        <!-- >>>>> CHANGE SUPPORT_PHONE here <<<<< -->
+        Need help? Call <a href="tel:+2376XXXXXXXX">+237 6XX XXX XXX</a>
+    </div>
+</div>
+
+<script>
+    /* Pre-fill username/password if passed via query string
+       (e.g., from success.html ?username=&password=). */
+    (function prefill() {
+        try {
+            var qs = window.location.search.substring(1);
+            if (!qs) return;
+            var p = {};
+            qs.split("&").forEach(function (pair) {
+                var kv = pair.split("=");
+                p[decodeURIComponent(kv[0] || "")] = decodeURIComponent((kv[1] || "").replace(/\+/g, " "));
+            });
+            if (p.username) document.getElementById("username").value = p.username;
+            if (p.password) document.getElementById("password").value = p.password;
+        } catch (_) {}
+    })();
+
+    function togglePass() {
+        var pw = document.getElementById("password");
+        var btn = document.querySelector(".toggle-pass");
+        if (pw.type === "password") { pw.type = "text"; btn.textContent = "Hide"; }
+        else { pw.type = "password"; btn.textContent = "Show"; }
+    }
+
+    function beforeSubmit() {
+        var u = document.getElementById("username").value.trim();
+        var p = document.getElementById("password").value;
+        var err = document.getElementById("errBox");
+        if (!u || !p) {
+            err.classList.add("show");
+            return false;
+        }
+        err.classList.remove("show");
+        // Let MikroTik handle the POST to $(link-login-only).
+        return true;
+    }
+</script>
+</body>
+</html>

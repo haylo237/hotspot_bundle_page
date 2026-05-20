@@ -1,0 +1,453 @@
+<!--
+================================================================================
+  HAYLO INTERNET — Payment Success Page (success.html)
+================================================================================
+  Purpose:
+    - Shown by the backend AFTER Campay payment is confirmed AND a MikroTik
+      hotspot user has been provisioned via the MikroTik API.
+    - The backend redirects the client here with all data as query parameters.
+
+  Expected URL:
+    success.html?username=user123
+                &password=pass123
+                &bundle=1day
+                &bundle_name=1%20Day%20Pass
+                &amount=500
+                &duration=24h
+                &speed=5Mbps
+                &reference=CP12345
+                &receipt=RCPT001
+                &link_login=http://10.5.50.1/login
+                &mac=AA:BB:CC:DD:EE:FF
+                &ip=10.5.50.23
+
+  Notes:
+    - Receipt is generated client-side from these parameters.
+    - "Login" button opens MikroTik login page using link_login (so the user
+      can paste / type their generated username + password).
+    - No backend calls happen from this page.
+
+  >>>>> CHANGE: ISP_NAME, SUPPORT_PHONE, SUPPORT_EMAIL below as needed. <<<<<
+================================================================================
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0b1023" />
+    <title>Payment Successful — HAYLO INTERNET</title>
+    <style>
+        *,*::before,*::after { box-sizing: border-box; margin:0; padding:0; }
+        html,body { height: 100%; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            color: #e8ecf8;
+            background: radial-gradient(1200px 800px at 10% -10%, #1b2a6b 0%, transparent 60%),
+                        radial-gradient(900px 700px at 110% 10%, #1a8a5a 0%, transparent 55%),
+                        linear-gradient(160deg, #05070f 0%, #0b1023 45%, #0a0a1f 100%);
+            min-height: 100vh;
+            padding: 20px 16px 40px;
+            -webkit-font-smoothing: antialiased;
+        }
+        .wrap { max-width: 640px; margin: 0 auto; }
+
+        /* Header */
+        .topbar {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 12px 14px; border-radius: 16px;
+            background: rgba(255,255,255,0.06);
+            backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+            border: 1px solid rgba(255,255,255,0.10);
+        }
+        .logo { display:flex; align-items:center; gap:10px; }
+        .logo-mark {
+            width:36px; height:36px; border-radius:10px;
+            background: linear-gradient(135deg, #4f8cff, #b14bff);
+            display:grid; place-items:center;
+        }
+        .logo-mark svg { width:20px; height:20px; color:#fff; }
+        .logo-text .brand { font-weight:800; font-size:14px; letter-spacing:.5px; }
+        .logo-text .tag { font-size:11px; color:#9aa3c7; }
+
+        .pill {
+            display:flex; align-items:center; gap:6px;
+            padding:6px 10px; border-radius:999px;
+            background: rgba(52,211,153,0.12);
+            border: 1px solid rgba(52,211,153,0.35);
+            color:#6ee7b7; font-size:11px; font-weight:700;
+        }
+        .pill .dot { width:6px; height:6px; border-radius:50%; background:#34d399;
+            box-shadow:0 0 0 0 rgba(52,211,153,.7); animation:pulse 1.8s infinite; }
+        @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(52,211,153,.7);}
+            70%{box-shadow:0 0 0 8px rgba(52,211,153,0);}
+            100%{box-shadow:0 0 0 0 rgba(52,211,153,0);} }
+
+        /* Success card */
+        .card {
+            margin-top: 22px;
+            padding: 26px 22px;
+            border-radius: 22px;
+            background: rgba(255,255,255,0.06);
+            backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255,255,255,0.10);
+            box-shadow: 0 18px 40px rgba(0,0,0,0.4);
+            text-align: center;
+        }
+        .check {
+            width: 72px; height: 72px;
+            margin: 4px auto 14px;
+            border-radius: 50%;
+            background: rgba(52,211,153,0.16);
+            border: 2px solid rgba(52,211,153,0.45);
+            display: grid; place-items: center;
+            animation: pop .35s ease;
+        }
+        .check svg { width: 36px; height: 36px; color: #6ee7b7; }
+        @keyframes pop { from{transform:scale(.7);opacity:0;} to{transform:scale(1);opacity:1;} }
+
+        .card h1 {
+            font-size: clamp(22px, 4vw, 28px);
+            background: linear-gradient(90deg, #fff, #b6c7ff);
+            -webkit-background-clip: text; background-clip: text; color: transparent;
+        }
+        .card .sub { color:#b6bedc; margin-top:6px; font-size:14px; }
+
+        /* Details list */
+        .details {
+            margin-top: 20px;
+            text-align: left;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 14px;
+            padding: 6px 14px;
+        }
+        .row {
+            display:flex; justify-content:space-between; gap:12px;
+            padding: 10px 0;
+            border-bottom: 1px dashed rgba(255,255,255,0.08);
+            font-size: 13px;
+        }
+        .row:last-child { border-bottom:none; }
+        .row .k { color:#9aa3c7; }
+        .row .v { color:#e8ecf8; font-weight:600; word-break:break-all; text-align:right; }
+
+        /* Credentials highlight */
+        .creds {
+            margin-top: 16px;
+            border-radius: 14px;
+            padding: 14px;
+            background: linear-gradient(135deg, rgba(79,140,255,0.18), rgba(177,75,255,0.18));
+            border: 1px solid rgba(255,255,255,0.18);
+            display: grid; grid-template-columns: 1fr; gap: 10px;
+        }
+        @media (min-width: 480px) { .creds { grid-template-columns: 1fr 1fr; } }
+        .cred {
+            display:flex; align-items:center; justify-content:space-between; gap:8px;
+            background: rgba(0,0,0,0.25);
+            border: 1px solid rgba(255,255,255,0.10);
+            border-radius: 10px;
+            padding: 10px 12px;
+        }
+        .cred .lbl { font-size:11px; color:#b6bedc; text-transform:uppercase; letter-spacing:.6px; }
+        .cred .val { font-size:15px; font-weight:700; color:#fff; font-family: ui-monospace, Menlo, Consolas, monospace; }
+        .copy-btn {
+            background: rgba(255,255,255,0.08);
+            border: 1px solid rgba(255,255,255,0.14);
+            color:#cfd6f0; cursor:pointer;
+            padding:5px 8px; border-radius:8px; font-size:11px;
+        }
+        .copy-btn:hover { background: rgba(255,255,255,0.14); }
+
+        /* Buttons */
+        .actions {
+            margin-top: 18px;
+            display:flex; gap:10px; flex-wrap:wrap; justify-content:center;
+        }
+        .btn {
+            padding: 12px 18px; border-radius: 12px; border:none; cursor:pointer;
+            font-size:14px; font-weight:700;
+            transition: filter .15s ease, transform .15s ease;
+        }
+        .btn-primary { background: linear-gradient(135deg, #4f8cff, #b14bff); color:#fff; }
+        .btn-ghost { background: rgba(255,255,255,0.08); color:#e8ecf8; border:1px solid rgba(255,255,255,0.15); }
+        .btn:hover { filter: brightness(1.08); }
+        .btn:active { transform: translateY(1px); }
+
+        /* Toast */
+        .toast-wrap {
+            position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+            display:flex; flex-direction:column; gap:8px; z-index: 100;
+        }
+        .toast {
+            background: rgba(20,24,48,0.95);
+            border: 1px solid rgba(52,211,153,0.45);
+            color:#e8ecf8; font-size:13px;
+            padding: 10px 14px; border-radius: 10px;
+            animation: slideDown .25s ease;
+        }
+        @keyframes slideDown { from{transform:translateY(-10px);opacity:0;} to{transform:translateY(0);opacity:1;} }
+
+        footer {
+            margin-top: 24px; text-align:center; color:#8a93b7; font-size:12px;
+        }
+        footer a { color:#b6bedc; text-decoration:none; }
+        footer a:hover { color:#fff; text-decoration:underline; }
+    </style>
+</head>
+<body>
+
+<div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
+
+<div class="wrap">
+
+    <!-- Header -->
+    <div class="topbar">
+        <div class="logo">
+            <div class="logo-mark" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M5 12.55a11 11 0 0 1 14 0"/>
+                    <path d="M1.5 9a16 16 0 0 1 21 0"/>
+                    <path d="M8.5 16.05a6 6 0 0 1 7 0"/>
+                    <circle cx="12" cy="20" r="1.2" fill="currentColor"/>
+                </svg>
+            </div>
+            <div class="logo-text">
+                <span class="brand" id="brandName">HAYLO INTERNET</span>
+                <span class="tag">High-Speed Public WiFi</span>
+            </div>
+        </div>
+        <div class="pill"><span class="dot"></span><span>Payment Confirmed</span></div>
+    </div>
+
+    <!-- Success card -->
+    <div class="card">
+        <div class="check" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"/>
+            </svg>
+        </div>
+        <h1>Payment Successful</h1>
+        <p class="sub">Your bundle is active. Use the credentials below to log in to the WiFi.</p>
+
+        <!-- Credentials (filled from query string at runtime) -->
+        <div class="creds">
+            <div class="cred">
+                <div>
+                    <div class="lbl">Username</div>
+                    <div class="val" id="cUser">—</div>
+                </div>
+                <button class="copy-btn" type="button" onclick="copyVal('cUser')">Copy</button>
+            </div>
+            <div class="cred">
+                <div>
+                    <div class="lbl">Password</div>
+                    <div class="val" id="cPass">—</div>
+                </div>
+                <button class="copy-btn" type="button" onclick="copyVal('cPass')">Copy</button>
+            </div>
+        </div>
+
+        <!-- Payment / bundle details -->
+        <div class="details" id="detailsList">
+            <div class="row"><span class="k">Bundle</span><span class="v" id="dBundle">—</span></div>
+            <div class="row"><span class="k">Amount Paid</span><span class="v" id="dAmount">—</span></div>
+            <div class="row"><span class="k">Duration</span><span class="v" id="dDuration">—</span></div>
+            <div class="row"><span class="k">Speed</span><span class="v" id="dSpeed">—</span></div>
+            <div class="row"><span class="k">Reference</span><span class="v" id="dReference">—</span></div>
+            <div class="row"><span class="k">Receipt No.</span><span class="v" id="dReceipt">—</span></div>
+            <div class="row"><span class="k">Date / Time</span><span class="v" id="dDate">—</span></div>
+        </div>
+
+        <!-- Actions -->
+        <div class="actions">
+            <!-- Opens MikroTik hotspot login page (URL provided by backend via link_login) -->
+            <button class="btn btn-primary" type="button" onclick="goToLogin()">Login</button>
+            <!-- Generates a printable receipt in a new window -->
+            <button class="btn btn-ghost" type="button" onclick="downloadReceipt()">Download Receipt</button>
+            <button class="btn btn-ghost" type="button" onclick="printReceipt()">Print Receipt</button>
+        </div>
+    </div>
+
+    <footer>
+        <!-- >>>>> CHANGE SUPPORT_PHONE / support email here <<<<< -->
+        Need help? Call <a href="tel:+2376XXXXXXXX">+237 6XX XXX XXX</a>
+        or email <a href="mailto:support@haylo.example">support@haylo.example</a>
+    </footer>
+</div>
+
+<script>
+    /* ----------------------------------------------------------------
+       Configuration placeholders
+       >>>>> CHANGE THESE for your deployment <<<<<
+       ---------------------------------------------------------------- */
+    var ISP_NAME      = "HAYLO INTERNET";
+    var SUPPORT_PHONE = "+237 6XX XXX XXX";
+    var SUPPORT_EMAIL = "support@haylo.example";
+
+    /* ----------------------------------------------------------------
+       Parse query parameters from the URL.
+       The backend redirects here with all the values after payment + user
+       provisioning. Example:
+         success.html?username=...&password=...&bundle=1day&amount=500
+                     &duration=24h&speed=5Mbps&reference=CP123&receipt=RCPT001
+                     &link_login=http://10.5.50.1/login&mac=...&ip=...
+       ---------------------------------------------------------------- */
+    function getParams() {
+        var out = {};
+        var qs = window.location.search.substring(1);
+        if (!qs) return out;
+        qs.split("&").forEach(function (pair) {
+            if (!pair) return;
+            var kv = pair.split("=");
+            out[decodeURIComponent(kv[0] || "")] = decodeURIComponent((kv[1] || "").replace(/\+/g, " "));
+        });
+        return out;
+    }
+    var P = getParams();
+
+    /* ----------------------------------------------------------------
+       Helpers
+       ---------------------------------------------------------------- */
+    function setText(id, val) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = (val == null || val === "") ? "—" : val;
+    }
+    function showToast(msg) {
+        var wrap = document.getElementById("toastWrap");
+        var t = document.createElement("div");
+        t.className = "toast"; t.textContent = msg;
+        wrap.appendChild(t);
+        setTimeout(function () {
+            t.style.transition = "opacity .25s ease";
+            t.style.opacity = "0";
+            setTimeout(function () { wrap.removeChild(t); }, 260);
+        }, 1800);
+    }
+    function copyVal(id) {
+        var v = document.getElementById(id).textContent;
+        if (!v || v === "—") return;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(v).then(function () { showToast("Copied!"); });
+        } else {
+            // Fallback for older browsers
+            var ta = document.createElement("textarea");
+            ta.value = v; document.body.appendChild(ta); ta.select();
+            try { document.execCommand("copy"); showToast("Copied!"); } catch (_) {}
+            document.body.removeChild(ta);
+        }
+    }
+    function formatDateTime(d) {
+        function pad(n){ return n < 10 ? "0"+n : ""+n; }
+        return d.getFullYear() + "-" + pad(d.getMonth()+1) + "-" + pad(d.getDate())
+             + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+    }
+
+    /* ----------------------------------------------------------------
+       Populate page from query string
+       ---------------------------------------------------------------- */
+    var purchaseDate = P.date ? P.date : formatDateTime(new Date());
+    setText("cUser",      P.username);
+    setText("cPass",      P.password);
+    setText("dBundle",    P.bundle_name || P.bundle);
+    setText("dAmount",    P.amount ? (P.amount + " XAF") : "—");
+    setText("dDuration",  P.duration);
+    setText("dSpeed",     P.speed);
+    setText("dReference", P.reference);
+    setText("dReceipt",   P.receipt);
+    setText("dDate",      purchaseDate);
+    document.getElementById("brandName").textContent = ISP_NAME;
+
+    /* ----------------------------------------------------------------
+       Login button: open MikroTik hotspot login page (URL from backend).
+       The user pastes/enters their generated username + password there.
+       ---------------------------------------------------------------- */
+    function goToLogin() {
+        var url = P.link_login;
+        if (!url) {
+            showToast("Login URL not provided.");
+            return;
+        }
+        window.location.href = url;
+    }
+
+    /* ----------------------------------------------------------------
+       Receipt generation (client-side).
+       Opens a new window with a clean printable receipt and:
+         - printReceipt()    => triggers window.print()
+         - downloadReceipt() => offers receipt.html as a downloadable file
+       ---------------------------------------------------------------- */
+    function buildReceiptHTML() {
+        var esc = function (s) {
+            return String(s == null ? "" : s)
+                .replace(/&/g,"&amp;").replace(/</g,"&lt;")
+                .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+        };
+        var rows = [
+            ["Receipt No.",         P.receipt],
+            ["Transaction Ref.",    P.reference],
+            ["Date / Time",         purchaseDate],
+            ["Client IP",           P.ip],
+            ["Client MAC",          P.mac],
+            ["Bundle",              P.bundle_name || P.bundle],
+            ["Duration",            P.duration],
+            ["Speed",               P.speed],
+            ["Amount Paid",         (P.amount ? P.amount + " XAF" : "")],
+            ["Username",            P.username],
+            ["Password",            P.password]
+        ];
+        var rowHtml = rows.map(function (r) {
+            return '<tr><td class="k">' + esc(r[0]) + '</td><td class="v">' + esc(r[1] || "—") + '</td></tr>';
+        }).join("");
+
+        return '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Receipt — ' + esc(ISP_NAME) + '</title>'
+            + '<style>'
+            + 'body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:0;padding:24px;background:#fff;}'
+            + '.box{max-width:520px;margin:0 auto;border:1px solid #ddd;border-radius:10px;padding:22px;}'
+            + 'h1{font-size:18px;margin:0 0 4px;color:#222;}'
+            + '.brand{font-size:22px;font-weight:800;letter-spacing:.5px;margin-bottom:2px;}'
+            + '.sub{color:#666;font-size:12px;margin-bottom:14px;}'
+            + 'table{width:100%;border-collapse:collapse;font-size:13px;}'
+            + 'td{padding:8px 6px;border-bottom:1px dashed #e5e5e5;vertical-align:top;}'
+            + 'td.k{color:#666;width:42%;}'
+            + 'td.v{color:#111;font-weight:600;word-break:break-all;text-align:right;}'
+            + '.footer{margin-top:14px;padding-top:10px;border-top:1px solid #eee;font-size:11px;color:#666;text-align:center;}'
+            + '@media print{ body{padding:0;} .box{border:none;} .noprint{display:none;} }'
+            + '.btn{display:inline-block;margin-top:14px;padding:10px 14px;background:#111;color:#fff;border-radius:8px;'
+            + 'border:none;cursor:pointer;font-size:13px;}'
+            + '</style></head><body>'
+            + '<div class="box">'
+            + '<div class="brand">' + esc(ISP_NAME) + '</div>'
+            + '<div class="sub">Internet Access Receipt</div>'
+            + '<table>' + rowHtml + '</table>'
+            + '<div class="footer">Support: ' + esc(SUPPORT_PHONE) + ' · ' + esc(SUPPORT_EMAIL) + '<br>'
+            + 'Thank you for choosing ' + esc(ISP_NAME) + '.</div>'
+            + '<button class="btn noprint" onclick="window.print()">Print Receipt</button>'
+            + '</div></body></html>';
+    }
+
+    function printReceipt() {
+        var html = buildReceiptHTML();
+        var w = window.open("", "_blank", "width=600,height=800");
+        if (!w) { showToast("Allow pop-ups to print."); return; }
+        w.document.open(); w.document.write(html); w.document.close();
+        // Give it a tick to render, then print.
+        setTimeout(function () { try { w.focus(); w.print(); } catch(_) {} }, 350);
+    }
+
+    function downloadReceipt() {
+        var html = buildReceiptHTML();
+        var blob = new Blob([html], { type: "text/html;charset=utf-8" });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement("a");
+        var name = "receipt-" + (P.receipt || P.reference || Date.now()) + ".html";
+        a.href = url; a.download = name;
+        document.body.appendChild(a); a.click();
+        setTimeout(function () {
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }, 100);
+    }
+</script>
+</body>
+</html>

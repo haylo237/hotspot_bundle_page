@@ -546,9 +546,10 @@
          FOOTER
          ============================================================ -->
     <footer>
+        <!-- >>>>> CHANGE SUPPORT_PHONE / support email here <<<<< -->
         <div class="links">
             <button type="button" onclick="openTerms()">Terms &amp; Conditions</button>
-            <a href="tel:+237600000000">Contact Support</a>
+            <a href="tel:+2376XXXXXXXX">Contact Support: +237 6XX XXX XXX</a>
             <a href="mailto:support@haylo.example">support@haylo.example</a>
         </div>
         <div>&copy; <span id="year"></span> HAYLO INTERNET — All rights reserved.</div>
@@ -647,25 +648,31 @@
     };
 
     /* ----------------------------------------------------------------
-       Backend payment endpoint configuration.
-       Replace PAYMENT_URL with your real payment gateway URL.
-       This is the BACKEND-INTEGRATION-POINT — your backend should:
-         1. Receive these query params
-         2. Create a payment session (e.g., Mobile Money, card, etc.)
-         3. After successful payment, call MikroTik's link-login URL
-            with valid credentials to grant internet access.
+       Backend Campay checkout endpoint.
+       === SECURITY: The Campay API secret MUST live on the backend. ===
+       This page only redirects the user to YOUR backend, which then:
+         1. Creates a Campay payment request (server-side, with secret keys).
+         2. Redirects the client to the Campay payment page.
+         3. Receives Campay webhook/callback to confirm payment.
+         4. Creates a MikroTik hotspot user via MikroTik API.
+         5. Redirects the client to success.html with credentials + receipt info.
+
+       >>>>> CHANGE THIS to your backend domain in production. <<<<<
        ---------------------------------------------------------------- */
-    var PAYMENT_URL = "https://yourdomain.com/pay";
+    var BACKEND_CHECKOUT_URL = "https://yourdomain.com/api/campay/checkout";
 
     /* ----------------------------------------------------------------
-       Pricing map — kept here for display logic / analytics only.
-       Authoritative pricing must be enforced server-side.
+       Bundle catalog — display only. Authoritative pricing must be
+       enforced server-side; the backend should re-validate price by
+       bundle_id before creating the Campay request.
+
+       >>>>> CHANGE prices / speeds / durations here as needed. <<<<<
        ---------------------------------------------------------------- */
     var BUNDLES = {
-        "1hour":  { name: "1 Hour",  price: 100,  speed: "3 Mbps",   duration: "1 hour"  },
-        "1day":   { name: "1 Day",   price: 500,  speed: "5 Mbps",   duration: "1 day"   },
-        "1week":  { name: "1 Week",  price: 2000, speed: "10 Mbps",  duration: "7 days"  },
-        "1month": { name: "1 Month", price: 5000, speed: "Unlimited",duration: "30 days" }
+        "1hour":  { name: "1 Hour Pass",  price: 100,  speed: "3Mbps",     duration: "1h"  },
+        "1day":   { name: "1 Day Pass",   price: 500,  speed: "5Mbps",     duration: "24h" },
+        "1week":  { name: "1 Week Pass",  price: 2000, speed: "10Mbps",    duration: "7d"  },
+        "1month": { name: "1 Month Pass", price: 5000, speed: "Unlimited", duration: "30d" }
     };
 
     /* ----------------------------------------------------------------
@@ -702,25 +709,39 @@
 
     /* ----------------------------------------------------------------
        redirectToPayment(bundleId)
-       Builds the payment URL with all required MikroTik hotspot
-       parameters and redirects the browser to the gateway.
+       Builds the Campay backend-checkout URL with the selected bundle
+       data AND the MikroTik hotspot variables, then redirects.
+
        === BACKEND-INTEGRATION-POINT ===
+       The backend (https://yourdomain.com/api/campay/checkout) is
+       responsible for creating the Campay payment request using its
+       SECRET API keys (never expose them here).
        ---------------------------------------------------------------- */
     function redirectToPayment(bundleId) {
+        var bundle = BUNDLES[bundleId];
+        if (!bundle) {
+            hideLoader();
+            showError("Invalid bundle selected.");
+            return;
+        }
         try {
             var params = [
-                "bundle="    + encodeURIComponent(bundleId),
-                "mac="       + encodeURIComponent(HOTSPOT.mac),
-                "ip="        + encodeURIComponent(HOTSPOT.ip),
-                "username="  + encodeURIComponent(HOTSPOT.username),
-                "linklogin=" + encodeURIComponent(HOTSPOT.linkLogin),
-                "orig="      + encodeURIComponent(HOTSPOT.linkOrig)
+                "bundle_id="   + encodeURIComponent(bundleId),
+                "bundle_name=" + encodeURIComponent(bundle.name),
+                "price="       + encodeURIComponent(bundle.price),
+                "duration="    + encodeURIComponent(bundle.duration),
+                "speed="       + encodeURIComponent(bundle.speed),
+                "mac="         + encodeURIComponent(HOTSPOT.mac),
+                "ip="          + encodeURIComponent(HOTSPOT.ip),
+                "link_login="  + encodeURIComponent(HOTSPOT.linkLogin),
+                "link_orig="   + encodeURIComponent(HOTSPOT.linkOrig)
             ].join("&");
 
-            var fullUrl = PAYMENT_URL + "?" + params;
+            var fullUrl = BACKEND_CHECKOUT_URL + "?" + params;
 
-            // Redirect — the backend takes it from here and, on success,
-            // posts back to MikroTik's link-login to authenticate the user.
+            // Backend will create the Campay request and redirect to the
+            // Campay payment page. After payment confirmation (webhook),
+            // backend creates the MikroTik user and redirects to success.html.
             window.location.href = fullUrl;
         } catch (err) {
             hideLoader();
