@@ -1,38 +1,41 @@
 /**
  * routes/hotspot.js
  * ---------------------------------------------------------------------------
- *  POST  /api/hotspot/pay                  → start CamPay collection
- *  GET   /api/hotspot/payment-status/:ref  → poll status; create MT user on success
- *  GET   /api/hotspot/success              → redirect helper for portal page
- *  GET   /api/hotspot/bundles              → public bundle catalog (display)
+ *  GET   /api/hotspot/offers              → offers whose MT profile exists
+ *  POST  /api/hotspot/pay                 → start CamPay collection
+ *  GET   /api/hotspot/payment-status/:ref → poll; create MT user on success
+ *  GET   /api/hotspot/success?reference=  → optional redirect helper
  *
- * Transactions are kept in a simple in-memory Map. For production, replace
- * `store` with a real DB (SQLite/Postgres/Redis) — the surface area is small.
+ * Transactions are kept in an in-memory Map. Replace `store` with a real DB
+ * for production scale — surface is small.
  * ---------------------------------------------------------------------------
  */
 
 const express = require("express");
 const router  = express.Router();
 
-const { getBundle, listBundles } = require("../data/bundles");
+const OFFERS   = require("../data/offers");
 const campay   = require("../services/campayService");
 const mikrotik = require("../services/mikrotikService");
 const receipts = require("../services/receiptService");
 
 /* -------------------------------------------------------------------------
  * In-memory transaction store. Schema:
- *   {
- *     reference, externalReference, phone, bundleId, amount,
- *     status: "pending"|"success"|"failed",
- *     createdAt, completedAt,
- *     username, password, receipt,
- *     mac, ip,
- *     provisioned: bool
- *   }
+ *   { reference, externalReference, phone, offerId, amount,
+ *     status: "pending"|"success"|"failed", createdAt, completedAt,
+ *     username, password, receipt, mac, ip, provisioned }
  * ------------------------------------------------------------------------- */
 const store = new Map();
 
 /* ---------- helpers ---------- */
+
+function findOffer(id) {
+    if (!id) return null;
+    for (let i = 0; i < OFFERS.length; i++) {
+        if (String(OFFERS[i].id) === String(id)) return OFFERS[i];
+    }
+    return null;
+}
 
 function validatePhoneServer(phone) {
     if (typeof phone !== "string") return false;
@@ -45,11 +48,41 @@ function sendError(res, httpStatus, code, message) {
     return res.status(httpStatus).json({ status: "error", code, message });
 }
 
+function publicOffer(o) {
+    // Hide internal fields like `profile` from clients.
+    return {
+        id:          o.id,
+        name:        o.name,
+        price:       o.price,
+        duration:    o.duration,
+        speed:       o.speed,
+        description: o.description
+    };
+}
+
 /* -------------------------------------------------------------------------
- * GET /api/hotspot/bundles   (optional — handy for clients)
+ * GET /api/hotspot/offers
+ *   - Reads MikroTik profile list
+ *   - Returns only OFFERS whose `profile` exists on the router
+ *   - If MikroTik is unreachable, falls back to all OFFERS so the portal
+ *     stays usable (set OFFERS_STRICT=true in .env to disable fallback)
  * ------------------------------------------------------------------------- */
-router.get("/bundles", (req, res) => {
-    res.json({ bundles: listBundles() });
+router.get("/offers", async (_req, res) => {
+    const profiles = await mikrotik.getHotspotProfiles();
+    const strict   = String(process.env.OFFERS_STRICT || "").toLowerCase() === "true";
+
+    let filtered;
+    if (profiles.length === 0 && !strict) {
+        console.warn("[offers] No MikroTik profiles fetched — falling back to full offers list.");
+        filtered = OFFERS.slice();
+    } else {
+        filtered = OFFERS.filter(o => profiles.indexOf(o.profile) !== -1);
+    }
+
+    res.json({
+        status: "success",
+        offers: filtered.map(publicOffer)
+    });
 });
 
 /* -------------------------------------------------------------------------
@@ -64,9 +97,21 @@ router.post("/pay", async (req, res) => {
     } = req.body || {};
 
     // ----- validation -----
-    const bundle = getBundle(bundle_id);
-    if (!bundle)                       return sendError(res, 400, "ER201", "Unknown bundle.");
-    if (!validatePhoneServer(phone))   return sendError(res, 400, "ER101", "Invalid phone number. Use 237XXXXXXXXX.");
+    const offer = findOffer(bundle_id);
+    if (!offer)                       return sendError(res, 400, "ER201", "Unknown bundle.");
+    if (!validatePhoneServer(phone))  return sendError(res, 400, "ER101", "Invalid phone number. Use 237XXXXXXXXX.");
+
+    // Ensure the offer's MikroTik profile still exists.
+    const profileOk = await mikrotik.profileExists(offer.profile);
+    if (!profileOk) {
+        // If MT is unreachable (empty list) AND not strict, allow through;
+        // otherwise reject so we don't sell something we can't provision.
+        const profiles = await mikrotik.getHotspotProfiles();
+        const strict   = String(process.env.OFFERS_STRICT || "").toLowerCase() === "true";
+        if (!(profiles.length === 0 && !strict)) {
+            return sendError(res, 503, "ER201", "This bundle is temporarily unavailable. Please pick another.");
+        }
+    }
 
     // ----- optional carrier check -----
     try {
@@ -80,37 +125,35 @@ router.post("/pay", async (req, res) => {
     } catch (_) { /* non-fatal */ }
 
     // ----- create our reference & call CamPay -----
-    const externalRef = "HAYLO-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8).toUpperCase();
+    const externalRef = "HOTSPOT-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8).toUpperCase();
 
     let campayRes;
     try {
         campayRes = await campay.createCollect({
-            amount:            bundle.price,
+            amount:            offer.price,
             from:              phone,
-            description:       (process.env.ISP_NAME || "HAYLO INTERNET") + " — " + bundle.name,
+            description:       (process.env.ISP_NAME || "HAYLO INTERNET") + " — " + offer.name + " bundle",
             externalReference: externalRef
         });
     } catch (err) {
         const data = (err.response && err.response.data) || {};
         console.error("[pay] campay collect failed:", err.response && err.response.status, data);
-        if (data && data.code && /balance/i.test(JSON.stringify(data))) {
+        if (data && /balance/i.test(JSON.stringify(data))) {
             return sendError(res, 402, "ER301", "Insufficient balance on your mobile money account.");
         }
         return sendError(res, 502, "ER201", data.message || "Could not start payment. Please try again.");
     }
 
     const reference = campayRes && campayRes.reference;
-    if (!reference) {
-        return sendError(res, 502, "ER201", "Payment provider did not return a reference.");
-    }
+    if (!reference) return sendError(res, 502, "ER201", "Payment provider did not return a reference.");
 
     // ----- persist -----
     store.set(reference, {
         reference,
         externalReference: externalRef,
         phone,
-        bundleId:    bundle.id,
-        amount:      bundle.price,
+        offerId:     offer.id,
+        amount:      offer.price,
         status:      "pending",
         createdAt:   new Date().toISOString(),
         completedAt: null,
@@ -126,7 +169,7 @@ router.post("/pay", async (req, res) => {
     return res.json({
         status:    "pending",
         reference,
-        message:   "Confirm the prompt on your phone to complete payment.",
+        message:   "Payment request sent. Please confirm on your phone.",
         ussd_code: campayRes.ussd_code || null,
         operator:  campayRes.operator  || null
     });
@@ -136,49 +179,42 @@ router.post("/pay", async (req, res) => {
  * GET /api/hotspot/payment-status/:reference
  *
  * Polls CamPay; on first SUCCESSFUL response, provisions a MikroTik user
- * (idempotently) and returns full credentials + bundle details.
+ * idempotently and returns full credentials + bundle details.
  * ------------------------------------------------------------------------- */
 router.get("/payment-status/:reference", async (req, res) => {
     const reference = req.params.reference;
     const tx = store.get(reference);
     if (!tx) return sendError(res, 404, "ER201", "Unknown transaction reference.");
 
-    // If we've already finalized this transaction, return the cached result.
-    if (tx.status === "success" && tx.provisioned) {
-        return res.json(buildSuccessPayload(tx));
-    }
-    if (tx.status === "failed") {
-        return res.json({ status: "failed", reference, message: "Payment was not completed." });
-    }
+    if (tx.status === "success" && tx.provisioned) return res.json(buildSuccessPayload(tx));
+    if (tx.status === "failed")                    return res.json({ status: "failed", reference, message: "Payment was not completed." });
 
     // Query CamPay
-    let status;
+    let statusRaw;
     try {
         const data = await campay.getTransactionStatus(reference);
-        status = (data && data.status) || "PENDING";
+        statusRaw = (data && data.status) || "PENDING";
     } catch (err) {
         console.warn("[status] campay status failed:", err.response && err.response.status);
         return res.json({ status: "pending", reference });
     }
 
-    const norm = String(status).toUpperCase();
+    const norm = String(statusRaw).toUpperCase();
 
     if (norm === "SUCCESSFUL") {
-        // Provision once.
         if (!tx.provisioned) {
-            const bundle   = getBundle(tx.bundleId);
+            const offer    = findOffer(tx.offerId);
             const username = mikrotik.generateUsername();
             const password = mikrotik.generatePassword();
             const comment  = "phone:" + tx.phone + " ref:" + tx.reference;
 
             const mt = await mikrotik.createHotspotUser({
                 username, password,
-                profile: bundle.profile,
+                profile: offer.profile,
                 comment
             });
 
             if (!mt.ok) {
-                // Don't lose the payment — mark success but flag for support.
                 tx.status      = "success";
                 tx.completedAt = new Date().toISOString();
                 tx.username    = username;
@@ -210,14 +246,12 @@ router.get("/payment-status/:reference", async (req, res) => {
         return res.json({ status: "failed", reference, message: "Payment was not completed." });
     }
 
-    // PENDING / anything else
     return res.json({ status: "pending", reference });
 });
 
 /* -------------------------------------------------------------------------
  * GET /api/hotspot/success?reference=...
- * Optional helper: redirects user back to the MikroTik hotspot login page
- * with credentials in the query string (useful for SMS / external callers).
+ * Optional helper — redirect to MikroTik login URL with credentials.
  * ------------------------------------------------------------------------- */
 router.get("/success", (req, res) => {
     const reference = req.query.reference;
@@ -226,15 +260,15 @@ router.get("/success", (req, res) => {
         return res.status(404).send("Transaction not found or not yet successful.");
     }
     const hotspotUrl = process.env.HOTSPOT_LOGIN_URL || "http://10.5.50.1/login";
-    const bundle     = getBundle(tx.bundleId) || {};
+    const offer     = findOffer(tx.offerId) || {};
     const params = new URLSearchParams({
         paid:      "true",
         username:  tx.username,
         password:  tx.password,
-        bundle:    bundle.name     || "",
+        bundle:    offer.name      || "",
         amount:    String(tx.amount || ""),
-        duration:  bundle.duration || "",
-        speed:     bundle.speed    || "",
+        duration:  offer.duration  || "",
+        speed:     offer.speed     || "",
         reference: tx.reference,
         receipt:   tx.receipt      || "",
         mac:       tx.mac || "",
@@ -243,21 +277,20 @@ router.get("/success", (req, res) => {
     return res.redirect(hotspotUrl + "?" + params.toString());
 });
 
-/* -------------------------------------------------------------------------
- * helpers
- * ------------------------------------------------------------------------- */
+/* ---------- helpers ---------- */
+
 function buildSuccessPayload(tx) {
-    const bundle = getBundle(tx.bundleId) || {};
+    const offer = findOffer(tx.offerId) || {};
     return {
         status:    "success",
         reference: tx.reference,
         receipt:   tx.receipt,
         username:  tx.username,
         password:  tx.password,
-        bundle:    bundle.name,
+        bundle:    offer.name,
         amount:    tx.amount,
-        duration:  bundle.duration,
-        speed:     bundle.speed,
+        duration:  offer.duration,
+        speed:     offer.speed,
         mac:       tx.mac,
         ip:        tx.ip,
         date:      tx.completedAt

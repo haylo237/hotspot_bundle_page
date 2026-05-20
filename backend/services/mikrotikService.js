@@ -1,14 +1,13 @@
 /**
  * services/mikrotikService.js
  * ---------------------------------------------------------------------------
- * Wraps the RouterOS API (via `node-routeros`) to provision hotspot users
- * after a successful CamPay payment.
+ * RouterOS API wrapper.
+ *   - getHotspotProfiles()                  → string[] of profile names
+ *   - profileExists(name)                   → boolean
+ *   - createHotspotUser({username, password, profile, comment})
+ *   - generateUsername() / generatePassword()
  *
- * Requires the following profiles to already exist on the router:
- *   /ip hotspot user profile name=1hour  rate-limit=3M/3M  session-timeout=1h
- *   /ip hotspot user profile name=1day   rate-limit=5M/5M  session-timeout=1d
- *   /ip hotspot user profile name=1week  rate-limit=10M/10M session-timeout=7d
- *   /ip hotspot user profile name=1month rate-limit=15M/15M session-timeout=30d
+ * Profile list is cached for 60s (profiles change rarely).
  * ---------------------------------------------------------------------------
  */
 
@@ -24,43 +23,62 @@ function buildClient() {
     });
 }
 
-/**
- * Generates a short, easy-to-type username (8 chars).
- *   e.g. "u4k9p2m1"
- */
+/* ---------- credential generators ---------- */
+
 function generateUsername() {
-    const chars = "abcdefghijkmnpqrstuvwxyz23456789"; // no confusing 0/o/1/l
+    const chars = "abcdefghijkmnpqrstuvwxyz23456789"; // skip confusing 0/o/1/l
     let s = "u";
     for (let i = 0; i < 7; i++) s += chars[Math.floor(Math.random() * chars.length)];
     return s;
 }
 
-/**
- * Generates a short, easy-to-type password (6 digits).
- *   e.g. "382174"
- */
 function generatePassword() {
     let s = "";
     for (let i = 0; i < 6; i++) s += Math.floor(Math.random() * 10);
     return s;
 }
 
-/**
- * Create a hotspot user on the MikroTik.
- *
- * @param {object} args
- * @param {string} args.username
- * @param {string} args.password
- * @param {string} args.profile   Must match an existing /ip hotspot user profile
- * @param {string} [args.comment] Free text — phone, reference, etc.
- */
+/* ---------- profile lookup (cached 60s) ---------- */
+
+let _profileCache = null;       // { profiles: string[], at: number }
+const PROFILE_TTL_MS = 60 * 1000;
+
+async function getHotspotProfiles({ force = false } = {}) {
+    if (!force && _profileCache && (Date.now() - _profileCache.at) < PROFILE_TTL_MS) {
+        return _profileCache.profiles;
+    }
+    const api = buildClient();
+    try {
+        await api.connect();
+        const rows = await api.write(["/ip/hotspot/user/profile/print"]);
+        const profiles = (rows || [])
+            .map(r => r && r.name)
+            .filter(n => typeof n === "string" && n.length > 0);
+        _profileCache = { profiles, at: Date.now() };
+        return profiles;
+    } catch (err) {
+        console.error("[mikrotik] getHotspotProfiles failed:", err && err.message);
+        return [];  // degrade gracefully — caller treats as "no profiles"
+    } finally {
+        try { api.close(); } catch (_) { /* ignore */ }
+    }
+}
+
+async function profileExists(name) {
+    if (!name) return false;
+    const profiles = await getHotspotProfiles();
+    return profiles.indexOf(name) !== -1;
+}
+
+/* ---------- user creation ---------- */
+
 async function createHotspotUser({ username, password, profile, comment }) {
     const api = buildClient();
     try {
         await api.connect();
         const params = [
             "/ip/hotspot/user/add",
-            "=name="    + username,
+            "=name="     + username,
             "=password=" + password,
             "=profile="  + profile
         ];
@@ -78,5 +96,7 @@ async function createHotspotUser({ username, password, profile, comment }) {
 module.exports = {
     generateUsername,
     generatePassword,
+    getHotspotProfiles,
+    profileExists,
     createHotspotUser
 };

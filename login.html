@@ -2,32 +2,25 @@
 ================================================================================
   HAYLO INTERNET — MikroTik Hotspot Captive Portal (login.html)
 ================================================================================
-  Single-file portal for MikroTik RouterOS hotspot system.
+  Single-file portal. Backend handles all CamPay + MikroTik logic.
 
-  Flow (frontend):
-    1. Bundle selection (cards)
-    2. Checkout panel (phone number input + confirm)
-    3. POST  -> {BACKEND_URL}/api/hotspot/pay
-         Body: { bundle_id, phone, mac, ip, link_login, link_login_only, link_orig }
-       Backend responses handled:
-         - { status: "success", username, password, ... }      → success panel
-         - { status: "pending", reference, message }           → poll status
-         - { status: "redirect", payment_url }                 → window.location
-         - { status: "error", code, message }                  → error UI
-    4. Polling: GET {BACKEND_URL}/api/hotspot/payment-status/{reference}
-    5. On success: show credentials + Connect Now / Manual Login / Receipt /
-       Connection Info.
-    6. Connect Now submits a hidden MikroTik login form → internet access.
+  TABS:
+    [ Select a Bundle ] (default active)   [ Login ]
 
-  SECURITY:
-    - Frontend NEVER calls CamPay directly.
-    - CamPay token lives only in backend .env.
-    - Backend re-validates bundle_id and amount.
+  STATES:
+    - Bundles tab   → dynamically fetched from GET {BACKEND}/api/hotspot/offers
+                     → bundle pick → phone input → Pay Now
+    - Login tab     → manual MikroTik login form ($(link-login-only) POST)
+    - Success view  → shown when URL has ?paid=true&username=&password=
+                      OR after backend confirms payment
 
-  >>>>> CHANGE these in the <script> below: <<<<<
-    - BACKEND_URL
-    - ISP_NAME, SUPPORT_PHONE, SUPPORT_EMAIL
-    - BUNDLES (display) — must match backend/data/bundles.js
+  BACKEND FLOW:
+    POST {BACKEND}/api/hotspot/pay
+      → { status: "success"|"pending"|"redirect"|"error", ... }
+    GET  {BACKEND}/api/hotspot/payment-status/{reference}
+      → poll every 4s
+
+  Change the CONFIG block in <script> for your deployment.
 ================================================================================
 -->
 <!DOCTYPE html>
@@ -98,146 +91,172 @@
         }
 
         /* Hero */
-        .hero { text-align: center; padding: 40px 10px 16px; }
+        .hero { text-align: center; padding: 28px 10px 10px; }
         .hero h1 {
-            font-size: clamp(26px, 4.5vw, 40px); font-weight: 800;
+            font-size: clamp(24px, 4.2vw, 36px); font-weight: 800;
             background: linear-gradient(90deg, #fff 0%, #b6c7ff 60%, #e3b9ff 100%);
             -webkit-background-clip: text; background-clip: text; color: transparent;
             letter-spacing: -0.5px;
         }
-        .hero p { margin-top: 10px; color: #b6bedc; font-size: clamp(14px,2.2vw,16px);
-            max-width: 620px; margin-left: auto; margin-right: auto; }
+        .hero p { margin-top: 8px; color: #b6bedc; font-size: clamp(13px,2vw,15px);
+            max-width: 600px; margin-left: auto; margin-right: auto; }
 
         /* MikroTik error from $(error) */
         .mt-error {
-            display: none; margin: 14px auto 0;
+            display: none; margin: 14px auto 0; max-width: 700px;
             padding: 10px 14px; border-radius: 12px;
             background: rgba(248,113,113,0.12); border: 1px solid rgba(248,113,113,0.40);
             color: #fca5a5; font-size: 13px; text-align: center;
         }
         .mt-error.show { display: block; }
 
+        /* Main portal card (holds tabs) */
+        .portal-card {
+            margin: 18px auto 0; max-width: 980px;
+            padding: 16px 16px 22px; border-radius: 22px;
+            background: rgba(255,255,255,0.05);
+            backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255,255,255,0.10);
+            box-shadow: 0 18px 40px rgba(0,0,0,0.40);
+        }
+
+        /* Tabs */
+        .tabs {
+            display: flex; gap: 8px; padding: 6px;
+            background: rgba(0,0,0,0.25);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 14px; margin-bottom: 18px;
+        }
+        .tab {
+            flex: 1; padding: 10px 14px; border-radius: 10px;
+            background: transparent; color: #cfd6f0; cursor: pointer;
+            border: none; font-size: 13px; font-weight: 700; letter-spacing: .2px;
+            transition: background .2s ease, color .2s ease, transform .15s ease;
+            -webkit-tap-highlight-color: transparent;
+            display: flex; align-items: center; justify-content: center; gap: 8px;
+        }
+        .tab:hover { color: #fff; }
+        .tab.active {
+            background: linear-gradient(135deg, #4f8cff, #b14bff);
+            color: #fff; box-shadow: 0 8px 20px rgba(79,140,255,0.30);
+        }
+        .tab svg { width: 14px; height: 14px; }
+
         /* Promo */
         .promo {
-            margin: 14px 0 18px; padding: 12px 16px; border-radius: 14px;
+            margin: 0 0 16px; padding: 10px 14px; border-radius: 12px;
             background: linear-gradient(90deg, rgba(255,193,7,0.15), rgba(255,87,34,0.15));
             border: 1px solid rgba(255,193,7,0.30);
-            color: #ffe7a8; font-size: 13px;
+            color: #ffe7a8; font-size: 12px;
             display: flex; align-items: center; gap: 10px; justify-content: center; text-align: center;
         }
         .promo .dot { width:8px; height:8px; border-radius:50%; background:#ffc107;
             box-shadow:0 0 12px #ffc107; flex-shrink:0; }
 
-        /* Bundles */
-        .bundles { display: grid; grid-template-columns: 1fr; gap: 16px; margin-top: 10px; }
+        /* Bundles grid */
+        .bundles { display: grid; grid-template-columns: 1fr; gap: 14px; }
         @media (min-width: 560px) { .bundles { grid-template-columns: repeat(2, 1fr); } }
         @media (min-width: 920px) { .bundles { grid-template-columns: repeat(4, 1fr); } }
 
         .card {
-            position: relative; padding: 20px 18px; border-radius: 20px;
+            position: relative; padding: 18px 16px; border-radius: 18px;
             background: rgba(255,255,255,0.06);
-            backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
             border: 1px solid rgba(255,255,255,0.10);
             box-shadow: 0 10px 30px rgba(0,0,0,0.35);
-            transition: transform .25s ease, box-shadow .25s ease, border-color .25s ease;
-            overflow: hidden;
+            transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease;
+            cursor: pointer; overflow: hidden;
         }
-        .card::before {
-            content:""; position:absolute; inset:0;
-            background: linear-gradient(135deg, rgba(79,140,255,0.18), rgba(177,75,255,0.10) 60%, transparent);
-            opacity: 0; transition: opacity .25s ease; pointer-events: none;
-        }
-        .card:hover { transform: translateY(-4px); border-color: rgba(255,255,255,0.22);
+        .card:hover { transform: translateY(-3px); border-color: rgba(255,255,255,0.22);
             box-shadow: 0 18px 40px rgba(0,0,0,0.45); }
-        .card:hover::before { opacity: 1; }
-        .card.selected { border-color: rgba(177,75,255,0.7); box-shadow: 0 18px 40px rgba(177,75,255,0.25); }
-        .card .badge {
-            position: absolute; top: 12px; right: 12px;
-            font-size: 10px; font-weight: 700; padding: 4px 8px; border-radius: 999px;
-            background: rgba(255,255,255,0.10); color: #cfd6f0;
-            border: 1px solid rgba(255,255,255,0.15);
-            text-transform: uppercase; letter-spacing: .6px;
+        .card.selected {
+            border-color: rgba(177,75,255,0.85);
+            box-shadow: 0 18px 40px rgba(177,75,255,0.30);
+            background: linear-gradient(135deg, rgba(79,140,255,0.15), rgba(177,75,255,0.18));
         }
-        .card.popular .badge { background: linear-gradient(90deg, #ffb84d, #ff5a8a); color: #1a0a1d; border-color: transparent; }
-        .card h3 { font-size: 18px; font-weight: 700; color: #fff; margin-bottom: 4px; }
-        .card .duration { color: #9aa3c7; font-size: 12px; margin-bottom: 14px; }
-        .price { display:flex; align-items:baseline; gap:6px; margin-bottom:14px; }
+        .card .check-mark {
+            position: absolute; top: 10px; right: 10px;
+            width: 22px; height: 22px; border-radius: 50%;
+            background: linear-gradient(135deg, #4f8cff, #b14bff);
+            display: none; align-items: center; justify-content: center;
+        }
+        .card.selected .check-mark { display: flex; }
+        .card .check-mark svg { width: 12px; height: 12px; color: #fff; }
+        .card h3 { font-size: 17px; font-weight: 700; color: #fff; margin-bottom: 4px; }
+        .card .duration { color: #9aa3c7; font-size: 12px; margin-bottom: 12px; }
+        .price { display:flex; align-items:baseline; gap:5px; margin-bottom:10px; }
         .price .amount {
-            font-size: 28px; font-weight: 800;
+            font-size: 24px; font-weight: 800;
             background: linear-gradient(90deg, #74a4ff, #c790ff);
             -webkit-background-clip:text; background-clip:text; color:transparent;
         }
-        .price .currency { font-size: 13px; color:#b6bedc; font-weight: 600; }
-        .features { list-style: none; margin-bottom: 16px; }
-        .features li { display:flex; align-items:center; gap:8px; color:#cfd6f0; font-size:13px; padding:5px 0; }
-        .features li svg { color:#6ee7b7; width:14px; height:14px; flex-shrink:0; }
+        .price .currency { font-size: 12px; color:#b6bedc; font-weight: 600; }
+        .card .desc { color:#cfd6f0; font-size: 12px; line-height: 1.4; min-height: 32px; }
 
-        .btn-buy {
-            width: 100%; padding: 12px 14px; border: none; cursor: pointer;
-            border-radius: 12px; font-size: 14px; font-weight: 700; color: #fff;
-            background: linear-gradient(135deg, #4f8cff, #b14bff);
-            box-shadow: 0 8px 22px rgba(79,140,255,0.35);
-            transition: transform .15s ease, filter .2s ease;
-            -webkit-tap-highlight-color: transparent;
+        /* Skeleton loaders */
+        .skeleton-card {
+            padding: 18px 16px; border-radius: 18px;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.08);
+            min-height: 140px;
         }
-        .btn-buy:hover { transform: translateY(-1px); filter: brightness(1.05); }
-        .btn-buy:active { transform: translateY(0); }
-
-        /* Centered single column panels */
-        .center-wrap { max-width: 520px; margin: 24px auto 0; }
-        .card-soft {
-            padding: 22px 20px; border-radius: 20px;
-            background: rgba(255,255,255,0.06);
-            backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
-            border: 1px solid rgba(255,255,255,0.10);
-            box-shadow: 0 18px 40px rgba(0,0,0,0.40);
+        .skeleton-line {
+            height: 12px; border-radius: 6px;
+            background: linear-gradient(90deg, rgba(255,255,255,0.06), rgba(255,255,255,0.14), rgba(255,255,255,0.06));
+            background-size: 200% 100%; animation: shimmer 1.4s ease-in-out infinite;
+            margin-bottom: 10px;
         }
-        .card-soft h2 { font-size: 18px; margin-bottom: 6px; color: #fff; }
-        .card-soft .sub { color: #b6bedc; font-size: 13px; margin-bottom: 14px; }
+        @keyframes shimmer { 0%{background-position:200% 0;} 100%{background-position:-200% 0;} }
 
-        /* Form */
+        /* Phone + Pay area */
+        .pay-bar {
+            margin-top: 18px; padding: 16px;
+            background: rgba(0,0,0,0.25);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 14px;
+        }
+        .selected-summary {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 8px 12px; margin-bottom: 12px;
+            background: rgba(79,140,255,0.10);
+            border: 1px solid rgba(79,140,255,0.25);
+            border-radius: 10px; font-size: 12px;
+        }
+        .selected-summary.empty { color: #9aa3c7; justify-content: center; }
+        .selected-summary b { color: #fff; }
+
         .input-label {
             display: block; font-size: 11px; color: #b6bedc;
             text-transform: uppercase; letter-spacing: .6px; margin-bottom: 4px;
         }
         .input {
             width: 100%; padding: 12px 14px;
-            background: rgba(0,0,0,0.25);
+            background: rgba(0,0,0,0.30);
             border: 1px solid rgba(255,255,255,0.12);
             color: #fff; border-radius: 10px;
             font-size: 14px; outline: none;
             transition: border-color .15s ease;
-            margin-bottom: 10px;
         }
         .input:focus { border-color: rgba(79,140,255,0.6); }
+        .input:disabled { opacity: .55; cursor: not-allowed; }
+        .field-error {
+            color: #fca5a5; font-size: 12px; margin: 6px 0 0; min-height: 14px;
+        }
+
         .pass-wrap { position: relative; }
         .pass-wrap .toggle-pass {
-            position: absolute; right: 10px; top: 10px;
-            background: rgba(255,255,255,0.06);
+            position: absolute; right: 8px; top: 8px;
+            background: rgba(255,255,255,0.08);
             border: 1px solid rgba(255,255,255,0.12);
             color: #cfd6f0; cursor: pointer;
             padding: 5px 8px; border-radius: 8px; font-size: 11px;
         }
-        .pass-wrap .toggle-pass:hover { background: rgba(255,255,255,0.12); }
-        .field-error {
-            color: #fca5a5; font-size: 12px; margin: -4px 0 8px; min-height: 14px;
-        }
+        .pass-wrap .toggle-pass:hover { background: rgba(255,255,255,0.14); }
 
-        /* Selected bundle pill in checkout */
-        .selected-bundle {
-            display: flex; justify-content: space-between; align-items: center;
-            padding: 10px 12px; margin-bottom: 14px;
-            background: rgba(79,140,255,0.10);
-            border: 1px solid rgba(79,140,255,0.30);
-            border-radius: 12px; font-size: 13px;
-        }
-        .selected-bundle b { color: #fff; }
-
-        /* Buttons */
         .btn {
             padding: 12px 16px; border-radius: 12px; border: none; cursor: pointer;
             font-size: 13px; font-weight: 700;
             transition: filter .15s ease, transform .15s ease;
+            -webkit-tap-highlight-color: transparent;
         }
         .btn-primary { background: linear-gradient(135deg, #4f8cff, #b14bff); color: #fff;
             box-shadow: 0 8px 22px rgba(79,140,255,0.35); }
@@ -247,27 +266,37 @@
         .btn:active { transform: translateY(1px); }
         .btn:disabled { opacity: .55; cursor: not-allowed; filter: none; }
 
-        .row-actions {
-            display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; margin-top: 14px;
-        }
+        .row-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; margin-top: 14px; }
 
-        /* Success panel pieces */
+        /* Login form */
+        .login-form { max-width: 420px; margin: 0 auto; }
+        .login-form .input { margin-bottom: 10px; }
+        .login-form .hint { color: #9aa3c7; font-size: 12px; text-align: center; margin-bottom: 14px; }
+
+        /* Empty / error states */
+        .state {
+            text-align: center; padding: 40px 20px; color: #b6bedc;
+        }
+        .state h3 { color: #fff; font-size: 16px; margin-bottom: 6px; }
+        .state p  { font-size: 13px; margin-bottom: 14px; }
+
+        /* Success panel */
+        .success-card { text-align: center; }
         .check {
-            width: 72px; height: 72px; margin: 4px auto 14px; border-radius: 50%;
+            width: 68px; height: 68px; margin: 4px auto 12px; border-radius: 50%;
             background: rgba(52,211,153,0.16); border: 2px solid rgba(52,211,153,0.45);
             display: grid; place-items: center; animation: popIn .35s ease;
         }
-        .check svg { width: 36px; height: 36px; color: #6ee7b7; }
+        .check svg { width: 34px; height: 34px; color: #6ee7b7; }
         @keyframes popIn { from{transform:scale(.7);opacity:0;} to{transform:scale(1);opacity:1;} }
 
-        .success-card { text-align: center; }
         .success-card h1 {
-            font-size: clamp(22px, 4vw, 28px);
+            font-size: clamp(20px, 3.8vw, 26px);
             background: linear-gradient(90deg, #fff, #b6c7ff);
             -webkit-background-clip:text; background-clip:text; color:transparent;
         }
         .creds {
-            margin-top: 16px; border-radius: 14px; padding: 14px;
+            margin-top: 14px; border-radius: 14px; padding: 12px;
             background: linear-gradient(135deg, rgba(79,140,255,0.18), rgba(177,75,255,0.18));
             border: 1px solid rgba(255,255,255,0.18);
             display: grid; grid-template-columns: 1fr; gap: 10px;
@@ -290,14 +319,14 @@
         .copy-btn:hover { background: rgba(255,255,255,0.14); }
 
         .details {
-            margin-top: 16px; text-align: left;
+            margin-top: 14px; text-align: left;
             background: rgba(255,255,255,0.04);
             border: 1px solid rgba(255,255,255,0.08);
-            border-radius: 14px; padding: 6px 14px;
+            border-radius: 14px; padding: 4px 14px;
         }
         .drow {
             display:flex; justify-content:space-between; gap:12px;
-            padding: 10px 0; border-bottom: 1px dashed rgba(255,255,255,0.08);
+            padding: 9px 0; border-bottom: 1px dashed rgba(255,255,255,0.08);
             font-size: 13px;
         }
         .drow:last-child { border-bottom: none; }
@@ -309,7 +338,7 @@
             display: none; margin-top: 14px; text-align: left;
             background: rgba(255,255,255,0.04);
             border: 1px solid rgba(255,255,255,0.08);
-            border-radius: 14px; padding: 16px;
+            border-radius: 14px; padding: 14px;
         }
         .panel.open { display: block; }
         .panel h3 { font-size: 14px; color:#fff; margin-bottom: 10px;
@@ -319,25 +348,6 @@
             border: 1px solid rgba(255,255,255,0.12);
             border-radius: 8px; padding: 4px 8px; font-size: 11px; cursor: pointer;
         }
-        .close-x:hover { background: rgba(255,255,255,0.14); }
-
-        /* Bundle-mode info toggle */
-        .info-toggle { margin: 24px auto 0; display: flex; justify-content: center; flex-wrap: wrap; gap: 10px; }
-        .info-toggle button {
-            background: rgba(255,255,255,0.06); color:#cfd6f0;
-            border: 1px solid rgba(255,255,255,0.12);
-            padding: 8px 14px; border-radius: 999px; font-size: 12px; cursor: pointer;
-        }
-        .info-toggle button:hover { background: rgba(255,255,255,0.10); }
-
-        .hotspot-info {
-            margin: 16px auto 0; max-width: 560px;
-            padding: 16px 18px; border-radius: 16px;
-            background: rgba(255,255,255,0.04);
-            border: 1px solid rgba(255,255,255,0.08);
-            font-size: 13px; color:#b6bedc; display: none;
-        }
-        .hotspot-info.open { display: block; }
 
         /* Modals */
         .modal {
@@ -353,7 +363,7 @@
         .modal-card {
             width: 100%; max-width: 420px; padding: 26px 22px;
             border-radius: 20px;
-            background: rgba(20,24,48,0.85);
+            background: rgba(20,24,48,0.92);
             border: 1px solid rgba(255,255,255,0.10);
             box-shadow: 0 24px 60px rgba(0,0,0,0.55);
             text-align: center; animation: popIn .25s ease;
@@ -394,18 +404,10 @@
         @keyframes slideDown { from{transform:translateY(-10px);opacity:0;} to{transform:translateY(0);opacity:1;} }
 
         /* Footer */
-        footer { margin-top: 36px; text-align: center; color: #8a93b7; font-size: 12px; padding: 10px; }
+        footer { margin-top: 28px; text-align: center; color: #8a93b7; font-size: 12px; padding: 10px; }
         footer .links { margin-bottom: 8px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
-        footer .links a, footer .links button {
-            color:#b6bedc; text-decoration:none;
-            background:none; border:none; cursor:pointer; font-size:12px; padding:4px 6px;
-        }
-        footer .links a:hover, footer .links button:hover { color: #fff; text-decoration: underline; }
-
-        .terms-body { text-align:left; max-height: 50vh; overflow-y:auto; padding: 10px 4px;
-            color:#cfd6f0; font-size: 13px; }
-        .terms-body h4 { margin-top: 10px; margin-bottom: 4px; color:#fff; font-size: 13px; }
-        .terms-body p  { margin-bottom: 8px; }
+        footer .links a { color:#b6bedc; text-decoration:none; }
+        footer .links a:hover { color: #fff; text-decoration: underline; }
 
         .visually-hidden { position: absolute !important; width: 1px; height: 1px;
             padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0);
@@ -418,10 +420,7 @@
 </head>
 <body>
 
-<!-- ============================================================
-     Hidden auto-login form (submitted by connectNow())
-     MikroTik replaces $(link-login-only) and $(link-orig) at runtime.
-     ============================================================ -->
+<!-- Hidden auto-login form (submitted by connectNow()) -->
 <form id="autoLoginForm" name="login" action="$(link-login-only)" method="post" class="visually-hidden" aria-hidden="true">
     <input type="hidden" name="username" id="autoUsername" />
     <input type="hidden" name="password" id="autoPassword" />
@@ -429,7 +428,6 @@
     <input type="hidden" name="popup" value="true" />
 </form>
 
-<!-- Toasts -->
 <div class="toast-wrap" id="toastWrap" aria-live="polite" aria-atomic="true"></div>
 
 <div class="wrap">
@@ -462,71 +460,110 @@
     </div>
 
     <!-- ============================================================
-         MODE 1: BUNDLE SELECTION
+         PORTAL CARD (Bundles tab + Login tab)
+         Visible by default. Hidden when success view is active.
          ============================================================ -->
-    <section id="bundleMode">
+    <section id="portalView">
+
         <div class="hero">
             <h1>Welcome to HAYLO INTERNET</h1>
-            <p>Choose a bundle below to unlock fast, secure internet access.</p>
+            <p>Pick a bundle to get online, or sign in if you already have an account.</p>
         </div>
 
-        <div class="promo" role="status">
-            <span class="dot" aria-hidden="true"></span>
-            <span>Pay easily with <strong>MTN MoMo</strong> or <strong>Orange Money</strong>.</span>
-        </div>
+        <div class="portal-card">
 
-        <section class="bundles" id="bundlesGrid">
-            <!-- Cards rendered dynamically from BUNDLES (see <script>) -->
-        </section>
-
-        <div class="info-toggle">
-            <button type="button" onclick="showManualLogin()">Already have an account? Login</button>
-            <button type="button" onclick="toggleHotspotInfo()" id="infoToggleBtn">Show connection details</button>
-        </div>
-
-        <section class="hotspot-info" id="hotspotInfo" aria-hidden="true">
-            <div class="drow"><span class="k">Client IP</span><span class="v" id="infoIp">$(ip)</span></div>
-            <div class="drow"><span class="k">MAC Address</span><span class="v" id="infoMac">$(mac)</span></div>
-            <div class="drow"><span class="k">Router / Hotspot</span><span class="v" id="infoHost">$(hostname)</span></div>
-        </section>
-    </section>
-
-    <!-- ============================================================
-         MODE 2: CHECKOUT (phone number entry)
-         ============================================================ -->
-    <section id="checkoutMode" class="center-wrap" style="display:none;">
-        <div class="card-soft">
-            <h2>Mobile Money Payment</h2>
-            <p class="sub">Enter your MTN MoMo or Orange Money number. You'll receive a confirmation prompt on your phone.</p>
-
-            <div class="selected-bundle">
-                <div>Selected: <b id="coBundleName">—</b></div>
-                <div><b id="coBundlePrice">—</b> XAF</div>
+            <!-- Tabs -->
+            <div class="tabs" role="tablist">
+                <button class="tab active" id="tabBundles" role="tab" aria-selected="true"
+                        aria-controls="paneBundles" onclick="switchTab('bundles')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="4" width="18" height="16" rx="3"/>
+                        <path d="M3 10h18"/><path d="M9 16h6"/>
+                    </svg>
+                    Select a Bundle
+                </button>
+                <button class="tab" id="tabLogin" role="tab" aria-selected="false"
+                        aria-controls="paneLogin" onclick="switchTab('login')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
+                        <polyline points="10 17 15 12 10 7"/>
+                        <line x1="15" y1="12" x2="3" y2="12"/>
+                    </svg>
+                    Login
+                </button>
             </div>
 
-            <label class="input-label" for="phoneInput">Phone Number</label>
-            <input class="input" id="phoneInput" type="tel" inputmode="numeric"
-                   placeholder="2376XXXXXXXX" maxlength="12"
-                   autocomplete="tel" />
-            <div class="field-error" id="phoneError"></div>
+            <!-- ====== Pane: BUNDLES ====== -->
+            <div id="paneBundles" role="tabpanel" aria-labelledby="tabBundles">
 
-            <button class="btn btn-primary btn-block" id="payBtn" onclick="payNow()">Pay Now</button>
-            <button class="btn btn-ghost btn-block" style="margin-top:8px;" onclick="backToBundles()">Choose another bundle</button>
+                <div class="promo" role="status">
+                    <span class="dot" aria-hidden="true"></span>
+                    <span>Pay easily with <strong>MTN MoMo</strong> or <strong>Orange Money</strong>.</span>
+                </div>
+
+                <div id="bundlesContainer">
+                    <div class="bundles" id="bundlesGrid" aria-busy="true">
+                        <!-- Skeletons while loading; replaced by renderOffers() -->
+                        <div class="skeleton-card"><div class="skeleton-line" style="width:50%"></div><div class="skeleton-line" style="width:30%"></div><div class="skeleton-line" style="width:80%"></div></div>
+                        <div class="skeleton-card"><div class="skeleton-line" style="width:60%"></div><div class="skeleton-line" style="width:35%"></div><div class="skeleton-line" style="width:75%"></div></div>
+                        <div class="skeleton-card"><div class="skeleton-line" style="width:55%"></div><div class="skeleton-line" style="width:40%"></div><div class="skeleton-line" style="width:70%"></div></div>
+                        <div class="skeleton-card"><div class="skeleton-line" style="width:45%"></div><div class="skeleton-line" style="width:30%"></div><div class="skeleton-line" style="width:85%"></div></div>
+                    </div>
+                </div>
+
+                <!-- Phone + Pay -->
+                <div class="pay-bar">
+                    <div class="selected-summary empty" id="selectedSummary">
+                        <span>Select a bundle above to continue</span>
+                    </div>
+                    <label class="input-label" for="phoneInput">Phone Number (MTN MoMo / Orange Money)</label>
+                    <input class="input" id="phoneInput" type="tel" inputmode="numeric"
+                           placeholder="2376XXXXXXXX" maxlength="12"
+                           autocomplete="tel" disabled />
+                    <div class="field-error" id="phoneError"></div>
+                    <button class="btn btn-primary btn-block" id="payBtn"
+                            style="margin-top:6px;" onclick="payNow()" disabled>Pay Now</button>
+                </div>
+            </div>
+
+            <!-- ====== Pane: LOGIN ====== -->
+            <div id="paneLogin" role="tabpanel" aria-labelledby="tabLogin" style="display:none;">
+                <div class="login-form">
+                    <p class="hint">Already have an account? Enter your credentials to connect.</p>
+                    <form name="manualLogin" action="$(link-login-only)" method="post"
+                          onsubmit="return manualLoginBeforeSubmit();">
+                        <label class="input-label" for="mUser">Username</label>
+                        <input class="input" type="text" id="mUser" name="username"
+                               autocomplete="username" autocapitalize="off" spellcheck="false" required />
+                        <label class="input-label" for="mPass" style="margin-top:6px;">Password</label>
+                        <div class="pass-wrap">
+                            <input class="input" type="password" id="mPass" name="password"
+                                   autocomplete="current-password" required />
+                            <button type="button" class="toggle-pass" onclick="togglePass('mPass', this)">Show</button>
+                        </div>
+                        <input type="hidden" name="dst" value="$(link-orig)" />
+                        <input type="hidden" name="popup" value="true" />
+                        <button type="submit" class="btn btn-primary btn-block" style="margin-top:14px;">Login</button>
+                    </form>
+                </div>
+            </div>
         </div>
     </section>
 
     <!-- ============================================================
-         MODE 3: PAYMENT SUCCESS
+         PAYMENT SUCCESS VIEW
          ============================================================ -->
-    <section id="successMode" class="center-wrap" style="display:none;">
-        <div class="card-soft success-card">
+    <section id="successView" style="display:none;">
+        <div class="portal-card success-card">
             <div class="check" aria-hidden="true">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="20 6 9 17 4 12"/>
                 </svg>
             </div>
             <h1>Payment Successful</h1>
-            <p class="sub">Your bundle is active. Tap <strong>Connect Now</strong> to start browsing.</p>
+            <p style="color:#b6bedc;font-size:13px;margin-top:4px;">
+                Your bundle is active. Tap <strong>Connect Now</strong> to start browsing.
+            </p>
 
             <div class="creds">
                 <div class="cred">
@@ -550,8 +587,10 @@
                 <div class="drow"><span class="k">Amount Paid</span><span class="v" id="sAmount">—</span></div>
                 <div class="drow"><span class="k">Duration</span><span class="v" id="sDuration">—</span></div>
                 <div class="drow"><span class="k">Speed</span><span class="v" id="sSpeed">—</span></div>
-                <div class="drow"><span class="k">Reference</span><span class="v" id="sReference">—</span></div>
+                <div class="drow"><span class="k">Transaction Ref.</span><span class="v" id="sReference">—</span></div>
                 <div class="drow"><span class="k">Receipt No.</span><span class="v" id="sReceipt">—</span></div>
+                <div class="drow"><span class="k">Client IP</span><span class="v" id="sIp">—</span></div>
+                <div class="drow"><span class="k">Client MAC</span><span class="v" id="sMac">—</span></div>
                 <div class="drow"><span class="k">Date / Time</span><span class="v" id="sDate">—</span></div>
             </div>
 
@@ -559,7 +598,7 @@
                 <button class="btn btn-primary" type="button" onclick="connectNow()">Connect Now</button>
                 <button class="btn btn-ghost" type="button" onclick="downloadReceipt()">Download Receipt</button>
                 <button class="btn btn-ghost" type="button" onclick="showConnectionInfo()">Connection Info</button>
-                <button class="btn btn-ghost" type="button" onclick="showManualLogin()">Manual Login</button>
+                <button class="btn btn-ghost" type="button" onclick="backToBundles()">Back to Bundles</button>
             </div>
 
             <div class="panel" id="connInfoPanel">
@@ -582,36 +621,10 @@
         </div>
     </section>
 
-    <!-- ============================================================
-         SHARED: Manual login panel (used in any mode)
-         ============================================================ -->
-    <div class="center-wrap">
-        <div class="panel" id="manualLoginPanel">
-            <h3>Manual Login
-                <button type="button" class="close-x" onclick="hideManualLogin()">Close</button>
-            </h3>
-            <form name="manualLogin" action="$(link-login-only)" method="post" onsubmit="return manualLoginBeforeSubmit();">
-                <label class="input-label" for="mUser">Username</label>
-                <input class="input" type="text" id="mUser" name="username"
-                       autocomplete="username" autocapitalize="off" spellcheck="false" required />
-                <label class="input-label" for="mPass">Password</label>
-                <div class="pass-wrap">
-                    <input class="input" type="password" id="mPass" name="password"
-                           autocomplete="current-password" required />
-                    <button type="button" class="toggle-pass" onclick="togglePass('mPass', this)">Show</button>
-                </div>
-                <input type="hidden" name="dst" value="$(link-orig)" />
-                <input type="hidden" name="popup" value="true" />
-                <button type="submit" class="btn btn-primary btn-block" style="margin-top:6px;">Login</button>
-            </form>
-        </div>
-    </div>
-
     <!-- Footer -->
     <footer>
         <div class="links">
-            <button type="button" onclick="openTerms()">Terms &amp; Conditions</button>
-            <a href="tel:+2376XXXXXXXX" id="fSupportPhone">Contact Support: +237 6XX XXX XXX</a>
+            <a href="tel:+2376XXXXXXXX" id="fSupportPhone">Support: +237 6XX XXX XXX</a>
             <a href="mailto:support@haylo.example" id="fSupportEmail">support@haylo.example</a>
         </div>
         <div>&copy; <span id="year"></span> <span id="brandName2">HAYLO INTERNET</span> — All rights reserved.</div>
@@ -642,50 +655,16 @@
     </div>
 </div>
 
-<div class="modal" id="termsModal" role="dialog" aria-modal="true" aria-labelledby="termsTitle">
-    <div class="modal-card">
-        <h2 id="termsTitle">Terms &amp; Conditions</h2>
-        <div class="terms-body">
-            <h4>1. Service</h4>
-            <p>HAYLO INTERNET provides time-limited internet access through prepaid bundles. Speeds are best-effort and may vary based on location and load.</p>
-            <h4>2. Acceptable Use</h4>
-            <p>No illegal activities, spamming, or bypassing network security.</p>
-            <h4>3. Payments</h4>
-            <p>Bundle prices are in XAF and non-refundable once activated.</p>
-            <h4>4. Privacy</h4>
-            <p>We log MAC and IP for session management and security.</p>
-            <h4>5. Support</h4>
-            <p>Contact our team via the phone/email in the footer.</p>
-        </div>
-        <div class="row-actions">
-            <button class="btn btn-primary" onclick="closeModal('termsModal')">I understand</button>
-        </div>
-    </div>
-</div>
-
 <script>
     /* ================================================================
        CONFIG — change for your deployment.
        ================================================================ */
-    var BACKEND_URL   = "http://localhost:5050";   // No trailing slash
-    var ISP_NAME      = "HAYLO INTERNET";
-    var SUPPORT_PHONE = "+237 6XX XXX XXX";
-    var SUPPORT_EMAIL = "support@haylo.example";
+    var BACKEND_BASE_URL = "https://yourdomain.com";   // No trailing slash
+    var ISP_NAME         = "HAYLO INTERNET";
+    var SUPPORT_PHONE    = "+237 6XX XXX XXX";
+    var SUPPORT_EMAIL    = "support@haylo.example";
 
-    /* Bundle catalog (DISPLAY ONLY — backend re-validates). Must mirror
-       backend/data/bundles.js keys & prices. */
-    var BUNDLES = {
-        "1hour":  { name: "1 Hour Pass",  price: 100,  speed: "3Mbps",  duration: "1h",  badge: "Quick",      popular: false,
-                    features: ["Speed up to 3 Mbps", "1 device", "Instant activation"] },
-        "1day":   { name: "1 Day Pass",   price: 500,  speed: "5Mbps",  duration: "24h", badge: "Popular",    popular: false,
-                    features: ["Speed up to 5 Mbps", "1 device", "Streaming friendly"] },
-        "1week":  { name: "1 Week Pass",  price: 2000, speed: "10Mbps", duration: "7d",  badge: "Best Value", popular: true,
-                    features: ["Speed up to 10 Mbps", "1 device", "HD streaming & gaming"] },
-        "1month": { name: "1 Month Pass", price: 5000, speed: "15Mbps", duration: "30d", badge: "Premium",    popular: false,
-                    features: ["Speed up to 15 Mbps", "1 device", "Priority support"] }
-    };
-
-    /* Friendly error codes from backend */
+    /* Friendly CamPay error code → message */
     var ERROR_MESSAGES = {
         "ER101": "Invalid phone number. Use a Cameroon number starting with 237.",
         "ER102": "Unsupported carrier. Only MTN and Orange Cameroon are supported.",
@@ -693,24 +672,20 @@
         "ER301": "Insufficient balance on your mobile money account."
     };
 
-    /* ================================================================
-       MikroTik runtime variables (substituted by RouterOS).
-       Outside RouterOS the literals remain as "$(...)" → sanitized to N/A.
-       ================================================================ */
+    /* MikroTik runtime variables (substituted by RouterOS at serve time). */
     var HOTSPOT = {
         mac:           "$(mac)",
         ip:            "$(ip)",
         linkLogin:     "$(link-login)",
         linkLoginOnly: "$(link-login-only)",
         linkOrig:      "$(link-orig)",
-        hostname:      "$(hostname)",
         error:         "$(error)"
     };
     function isMtPlaceholder(v) { return (!v) || (typeof v === "string" && v.indexOf("$(") === 0); }
     function sanitize(v) { return isMtPlaceholder(v) ? "N/A" : v; }
 
     /* ================================================================
-       Tiny DOM helpers
+       DOM helpers
        ================================================================ */
     function $(id) { return document.getElementById(id); }
     function setText(id, val) { var el = $(id); if (el) el.textContent = (val == null || val === "") ? "—" : val; }
@@ -725,6 +700,7 @@
         return out;
     }
     var P = getParams();
+
     function nowStr() {
         function pad(n){ return n<10?"0"+n:""+n; }
         var d = new Date();
@@ -771,88 +747,147 @@
         if (msg) $("errorText").textContent = msg;
         openModal("errorModal");
     }
-    function openTerms() { openModal("termsModal"); }
 
     /* ================================================================
-       Mode switching
+       Views & tabs
        ================================================================ */
-    function showBundleSelection() { $("bundleMode").style.display = ""; $("checkoutMode").style.display = "none"; $("successMode").style.display = "none"; }
-    function showCheckout()        { $("bundleMode").style.display = "none"; $("checkoutMode").style.display = ""; $("successMode").style.display = "none"; }
-    function showSuccessPanel()    { $("bundleMode").style.display = "none"; $("checkoutMode").style.display = "none"; $("successMode").style.display = ""; }
+    function showPortalView() { $("portalView").style.display = ""; $("successView").style.display = "none"; }
+    function showSuccessView(){ $("portalView").style.display = "none"; $("successView").style.display = ""; }
+
+    function switchTab(which) {
+        var bundlesActive = (which === "bundles");
+        $("tabBundles").classList.toggle("active", bundlesActive);
+        $("tabBundles").setAttribute("aria-selected", bundlesActive ? "true" : "false");
+        $("tabLogin").classList.toggle("active", !bundlesActive);
+        $("tabLogin").setAttribute("aria-selected", !bundlesActive ? "true" : "false");
+        $("paneBundles").style.display = bundlesActive ? "" : "none";
+        $("paneLogin").style.display   = bundlesActive ? "none" : "";
+    }
 
     /* ================================================================
-       Render bundle cards from BUNDLES catalog
+       Offers — fetched from backend.
        ================================================================ */
-    function renderBundles() {
+    var OFFERS = [];               // populated by loadOffers()
+    var selectedOffer = null;
+
+    function loadOffers() {
+        var grid = $("bundlesGrid");
+        grid.setAttribute("aria-busy", "true");
+        fetch(BACKEND_BASE_URL + "/api/hotspot/offers", { headers: { "Accept": "application/json" } })
+            .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+            .then(function (res) {
+                if (!res.ok || !res.data || res.data.status !== "success" || !Array.isArray(res.data.offers)) {
+                    renderOffersError("Could not load bundles. Please try again.");
+                    return;
+                }
+                OFFERS = res.data.offers;
+                if (OFFERS.length === 0) {
+                    renderOffersError("No bundles are available right now. Please contact support.");
+                } else {
+                    renderOffers(OFFERS);
+                }
+            })
+            .catch(function () {
+                renderOffersError("Could not reach the server. Check your connection and try again.");
+            });
+    }
+
+    function renderOffers(offers) {
         var grid = $("bundlesGrid");
         var html = "";
-        Object.keys(BUNDLES).forEach(function (id) {
-            var b = BUNDLES[id];
-            var feats = b.features.map(function (f) {
-                return '<li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> ' + f + '</li>';
-            }).join("");
-            html += '<article class="card ' + (b.popular ? "popular" : "") + '" data-bundle="' + id + '">'
-                  +   '<span class="badge">' + b.badge + '</span>'
-                  +   '<h3>' + b.name + '</h3>'
-                  +   '<p class="duration">Valid for ' + b.duration + ' · ' + b.speed + '</p>'
-                  +   '<div class="price"><span class="amount">' + b.price.toLocaleString() + '</span><span class="currency">XAF</span></div>'
-                  +   '<ul class="features">' + feats + '</ul>'
-                  +   '<button class="btn-buy" onclick="selectBundle(\'' + id + '\')">Buy Now</button>'
+        offers.forEach(function (o) {
+            var price    = (typeof o.price === "number" ? o.price : parseInt(o.price, 10) || 0).toLocaleString();
+            var name     = o.name     || o.id || "Bundle";
+            var duration = o.duration || "—";
+            var speed    = o.speed    || "";
+            var desc     = o.desc     || o.description || "";
+            html += '<article class="card" data-offer-id="' + escapeAttr(o.id) + '" onclick="selectOffer(\'' + escapeAttr(o.id) + '\')">'
+                  +   '<div class="check-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></div>'
+                  +   '<h3>' + escapeHtml(name) + '</h3>'
+                  +   '<p class="duration">Valid for ' + escapeHtml(duration) + (speed ? ' · ' + escapeHtml(speed) : '') + '</p>'
+                  +   '<div class="price"><span class="amount">' + price + '</span><span class="currency">XAF</span></div>'
+                  +   '<p class="desc">' + escapeHtml(desc) + '</p>'
                   + '</article>';
         });
         grid.innerHTML = html;
+        grid.setAttribute("aria-busy", "false");
     }
 
-    /* ================================================================
-       BUNDLE → CHECKOUT
-       ================================================================ */
-    var selectedBundleId = null;
-    function selectBundle(id) {
-        var b = BUNDLES[id];
-        if (!b) { showToast("Invalid bundle", "error"); return; }
-        selectedBundleId = id;
-        $("coBundleName").textContent  = b.name + " · " + b.duration + " · " + b.speed;
-        $("coBundlePrice").textContent = b.price.toLocaleString();
+    function renderOffersError(msg) {
+        var c = $("bundlesContainer");
+        c.innerHTML = '<div class="state">'
+                    +   '<h3>Bundles unavailable</h3>'
+                    +   '<p>' + escapeHtml(msg) + '</p>'
+                    +   '<button class="btn btn-primary" onclick="retryOffers()">Try Again</button>'
+                    + '</div>';
+    }
+    function retryOffers() {
+        $("bundlesContainer").innerHTML =
+            '<div class="bundles" id="bundlesGrid" aria-busy="true">'
+          + '<div class="skeleton-card"><div class="skeleton-line" style="width:50%"></div><div class="skeleton-line" style="width:30%"></div><div class="skeleton-line" style="width:80%"></div></div>'
+          + '<div class="skeleton-card"><div class="skeleton-line" style="width:60%"></div><div class="skeleton-line" style="width:35%"></div><div class="skeleton-line" style="width:75%"></div></div>'
+          + '<div class="skeleton-card"><div class="skeleton-line" style="width:55%"></div><div class="skeleton-line" style="width:40%"></div><div class="skeleton-line" style="width:70%"></div></div>'
+          + '<div class="skeleton-card"><div class="skeleton-line" style="width:45%"></div><div class="skeleton-line" style="width:30%"></div><div class="skeleton-line" style="width:85%"></div></div>'
+          + '</div>';
+        loadOffers();
+    }
+
+    function escapeHtml(s) {
+        return String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;")
+               .replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+    }
+    function escapeAttr(s) { return escapeHtml(s).replace(/'/g, "\\'"); }
+
+    function selectOffer(id) {
+        var o = null;
+        for (var i = 0; i < OFFERS.length; i++) { if (String(OFFERS[i].id) === String(id)) { o = OFFERS[i]; break; } }
+        if (!o) return;
+        selectedOffer = o;
+
+        // Highlight selected card
+        var cards = document.querySelectorAll(".bundles .card");
+        cards.forEach(function (c) { c.classList.remove("selected"); });
+        var picked = document.querySelector('.bundles .card[data-offer-id="' + id + '"]');
+        if (picked) picked.classList.add("selected");
+
+        // Update summary + enable inputs
+        var sum = $("selectedSummary");
+        sum.classList.remove("empty");
+        sum.innerHTML = '<div>Selected: <b>' + escapeHtml(o.name) + '</b> · ' + escapeHtml(o.duration) + (o.speed ? ' · ' + escapeHtml(o.speed) : '') + '</div>'
+                      + '<div><b>' + (typeof o.price === "number" ? o.price : parseInt(o.price,10)||0).toLocaleString() + '</b> XAF</div>';
+        $("phoneInput").disabled = false;
+        $("payBtn").disabled = false;
         $("phoneError").textContent = "";
-        $("phoneInput").value = "";
-        showCheckout();
         setTimeout(function () { $("phoneInput").focus(); }, 50);
     }
-    function backToBundles() {
-        selectedBundleId = null;
-        showBundleSelection();
-    }
 
     /* ================================================================
-       Phone validation (client-side; backend MUST re-validate)
-       Cameroon: 237 + 9 digits, total 12. MTN: 65/67/68, Orange: 69/655-659
-       (kept loose; backend uses CamPay holder_info to be authoritative).
+       Phone validation (client-side; backend re-validates)
+       Cameroon mobile: 237 + 9 digits, local starts with 6
        ================================================================ */
     function validatePhone(phone) {
-        if (!/^\d+$/.test(phone))                return { ok: false, msg: "Numbers only — no spaces or +." };
-        if (phone.length !== 12)                 return { ok: false, msg: "Phone must be 12 digits including 237." };
-        if (phone.indexOf("237") !== 0)          return { ok: false, msg: "Phone must start with 237." };
-        var local = phone.substring(3);          // 9-digit local part
-        if (!/^6\d{8}$/.test(local))             return { ok: false, msg: "Use a valid mobile number (starts with 6)." };
+        if (!/^\d+$/.test(phone))         return { ok: false, msg: "Numbers only — no spaces or +." };
+        if (phone.length !== 12)          return { ok: false, msg: "Phone must be 12 digits including 237." };
+        if (phone.indexOf("237") !== 0)   return { ok: false, msg: "Phone must start with 237." };
+        if (!/^6\d{8}$/.test(phone.slice(3))) return { ok: false, msg: "Use a valid mobile number (starts with 6)." };
         return { ok: true };
     }
 
     /* ================================================================
        payNow() → POST /api/hotspot/pay
        ================================================================ */
-    var currentReference = null;
     function payNow() {
+        if (!selectedOffer) { showToast("Please pick a bundle first.", "error"); return; }
         var phone = ($("phoneInput").value || "").trim();
         var v = validatePhone(phone);
         if (!v.ok) { $("phoneError").textContent = v.msg; return; }
         $("phoneError").textContent = "";
-        if (!selectedBundleId) { showToast("Please pick a bundle.", "error"); backToBundles(); return; }
 
         $("payBtn").disabled = true;
         showLoader("Sending payment request…", "Confirm the prompt on your phone.");
 
         var body = {
-            bundle_id:       selectedBundleId,
+            bundle_id:       selectedOffer.id,
             phone:           phone,
             mac:             HOTSPOT.mac,
             ip:              HOTSPOT.ip,
@@ -861,7 +896,7 @@
             link_orig:       HOTSPOT.linkOrig
         };
 
-        fetch(BACKEND_URL + "/api/hotspot/pay", {
+        fetch(BACKEND_BASE_URL + "/api/hotspot/pay", {
             method: "POST",
             headers: { "Content-Type": "application/json", "Accept": "application/json" },
             body: JSON.stringify(body)
@@ -872,7 +907,7 @@
             if (!r.ok) { handleBackendError(r.data); return; }
             handlePayResponse(r.data);
         })
-        .catch(function (err) {
+        .catch(function () {
             $("payBtn").disabled = false;
             hideLoader();
             showError("Could not reach the payment server. Check your connection and try again.");
@@ -900,20 +935,17 @@
             return;
         }
         if (data.status === "pending" && data.reference) {
-            currentReference = data.reference;
             showLoader("Waiting for payment confirmation…",
                        data.message || "Please confirm the prompt on your phone.");
             pollPaymentStatus(data.reference);
             return;
         }
-        if (data.status === "error") { handleBackendError(data); return; }
-
         handleBackendError(data);
     }
 
     /* ================================================================
        Polling: GET /api/hotspot/payment-status/{reference}
-       Tries every 4s, up to ~3 minutes.
+       Every 4s, up to ~3 minutes.
        ================================================================ */
     var pollTimer = null;
     function pollPaymentStatus(reference) {
@@ -921,7 +953,7 @@
         if (pollTimer) clearInterval(pollTimer);
         pollTimer = setInterval(function () {
             attempts++;
-            fetch(BACKEND_URL + "/api/hotspot/payment-status/" + encodeURIComponent(reference), {
+            fetch(BACKEND_BASE_URL + "/api/hotspot/payment-status/" + encodeURIComponent(reference), {
                 headers: { "Accept": "application/json" }
             })
             .then(function (res) { return res.json(); })
@@ -937,7 +969,6 @@
                     var msg = (data.code && ERROR_MESSAGES[data.code]) || data.message || "Payment was not completed.";
                     showError(msg);
                 }
-                // status === "pending" → keep polling
             })
             .catch(function () { /* swallow transient errors; keep polling */ });
 
@@ -950,11 +981,9 @@
     }
 
     /* ================================================================
-       Apply success payload → populate success panel + URL params
-       (so a refresh / back-link preserves state).
+       Success payload → success view
        ================================================================ */
     function applySuccess(d) {
-        // Normalize fields
         var payload = {
             username:  d.username,
             password:  d.password,
@@ -969,7 +998,7 @@
             date:      d.date || nowStr()
         };
         populateSuccess(payload);
-        showSuccessPanel();
+        showSuccessView();
     }
 
     function populateSuccess(d) {
@@ -981,6 +1010,8 @@
         setText("sSpeed",     d.speed);
         setText("sReference", d.reference);
         setText("sReceipt",   d.receipt);
+        setText("sIp",        d.ip);
+        setText("sMac",       d.mac);
         setText("sDate",      d.date);
 
         setText("cInfoUser",     d.username);
@@ -994,7 +1025,6 @@
         setText("cInfoReceipt",  d.receipt);
         setText("cInfoSupport",  SUPPORT_PHONE + " · " + SUPPORT_EMAIL);
 
-        // Cache for receipt / connect-now
         window.__successPayload = d;
     }
 
@@ -1004,26 +1034,17 @@
     function connectNow() {
         var d = window.__successPayload || {};
         var u = d.username, p = d.password;
-        if (!u || !p) { showToast("Missing credentials. Use Manual Login.", "error"); showManualLogin(); return; }
+        if (!u || !p) { showToast("Missing credentials.", "error"); return; }
         $("autoUsername").value = u;
         $("autoPassword").value = p;
         showLoader("Connecting you to the internet…", "Authenticating with the hotspot.");
         try { $("autoLoginForm").submit(); }
-        catch (err) { hideLoader(); showError("Auto-login failed. Please try Manual Login."); }
+        catch (err) { hideLoader(); showError("Auto-login failed. Try the Login tab and enter your credentials."); }
     }
 
     /* ================================================================
-       Manual login panel + Connection info panel
+       Manual login + connection info panel + Back to bundles
        ================================================================ */
-    function showManualLogin() {
-        var d = window.__successPayload || {};
-        var panel = $("manualLoginPanel");
-        panel.classList.add("open");
-        if (d.username && !$("mUser").value) $("mUser").value = d.username;
-        if (d.password && !$("mPass").value) $("mPass").value = d.password;
-        panel.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-    function hideManualLogin() { $("manualLoginPanel").classList.remove("open"); }
     function manualLoginBeforeSubmit() {
         if (!$("mUser").value.trim() || !$("mPass").value) {
             showToast("Enter username and password.", "error");
@@ -1031,7 +1052,6 @@
         }
         return true;
     }
-
     function showConnectionInfo() {
         var panel = $("connInfoPanel");
         panel.classList.add("open");
@@ -1039,14 +1059,19 @@
     }
     function hideConnectionInfo() { $("connInfoPanel").classList.remove("open"); }
 
-    /* ================================================================
-       Hotspot info panel (bundle mode)
-       ================================================================ */
-    function toggleHotspotInfo() {
-        var panel = $("hotspotInfo"), btn = $("infoToggleBtn");
-        var open = panel.classList.toggle("open");
-        panel.setAttribute("aria-hidden", open ? "false" : "true");
-        btn.textContent = open ? "Hide connection details" : "Show connection details";
+    function backToBundles() {
+        selectedOffer = null;
+        $("phoneInput").value = "";
+        $("phoneInput").disabled = true;
+        $("payBtn").disabled = true;
+        $("phoneError").textContent = "";
+        var sum = $("selectedSummary");
+        sum.classList.add("empty");
+        sum.innerHTML = "<span>Select a bundle above to continue</span>";
+        document.querySelectorAll(".bundles .card.selected").forEach(function (c) { c.classList.remove("selected"); });
+        switchTab("bundles");
+        showPortalView();
+        if (!OFFERS || OFFERS.length === 0) retryOffers();
     }
 
     /* ================================================================
@@ -1054,10 +1079,7 @@
        ================================================================ */
     function buildReceiptHTML() {
         var d = window.__successPayload || {};
-        var esc = function (s) {
-            return String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;")
-                   .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
-        };
+        var esc = escapeHtml;
         var rows = [
             ["Receipt No.",      d.receipt],
             ["Transaction Ref.", d.reference],
@@ -1122,18 +1144,13 @@
         // Branding
         $("brandName").textContent  = ISP_NAME;
         $("brandName2").textContent = ISP_NAME;
-        $("fSupportPhone").textContent = "Contact Support: " + SUPPORT_PHONE;
+        $("fSupportPhone").textContent = "Support: " + SUPPORT_PHONE;
         $("fSupportPhone").href = "tel:" + SUPPORT_PHONE.replace(/\s+/g, "");
         $("fSupportEmail").textContent = SUPPORT_EMAIL;
         $("fSupportEmail").href = "mailto:" + SUPPORT_EMAIL;
         $("year").textContent = new Date().getFullYear();
 
-        // Hotspot info panel
-        $("infoIp").textContent  = sanitize(HOTSPOT.ip);
-        $("infoMac").textContent = sanitize(HOTSPOT.mac);
-        $("infoHost").textContent= sanitize(HOTSPOT.hostname);
-
-        // $(error) from MikroTik (only show if a real value was substituted)
+        // $(error) from MikroTik
         if (!isMtPlaceholder(HOTSPOT.error) && HOTSPOT.error.trim() !== "") {
             $("mtErrorText").textContent = HOTSPOT.error;
             $("mtError").classList.add("show");
@@ -1153,10 +1170,10 @@
             }
         });
 
-        // Render bundles
-        renderBundles();
+        // Default: Bundles tab + portal view
+        switchTab("bundles");
 
-        // If backend redirected back with success params (?paid=true&...)
+        // If success params present, skip directly to success view
         if (P.paid === "true" && P.username && P.password) {
             applySuccess({
                 username: P.username, password: P.password,
@@ -1165,11 +1182,14 @@
                 reference: P.reference, receipt: P.receipt,
                 mac: P.mac, ip: P.ip, date: P.date
             });
-        } else if (P.status === "error") {
-            showError(P.msg || "Payment failed. Please try again.");
-        } else {
-            showBundleSelection();
+            return;
         }
+        if (P.status === "error") {
+            showError(P.msg || "Payment failed. Please try again.");
+        }
+
+        showPortalView();
+        loadOffers();
 
         // Live mask: keep digits only in phone field, max 12
         $("phoneInput").addEventListener("input", function (e) {
