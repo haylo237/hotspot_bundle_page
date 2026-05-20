@@ -21,6 +21,7 @@ const router  = express.Router();
 const campay   = require("../services/campayService");
 const mikrotik = require("../services/mikrotikService");
 const receipts = require("../services/receiptService");
+const offerService = require("../services/offerService");
 
 /* In-memory transaction store. The full offer snapshot is saved into the
  * tx record at /pay time so /payment-status remains stable even if the
@@ -61,7 +62,7 @@ function publicOffer(o) {
 router.get("/offers", async (_req, res) => {
     const isDev    = String(process.env.NODE_ENV || "").toLowerCase() !== "production";
     const profiles = await mikrotik.getHotspotProfiles();
-    const offers   = await mikrotik.listOffers();
+    const offers   = offerService.getActiveOffers().filter(o => profiles.includes(o.profile));
 
     console.log("[offers] MikroTik profiles found:",
                 profiles.length ? profiles.join(", ") : "(none)");
@@ -80,10 +81,10 @@ router.get("/offers", async (_req, res) => {
     if (offers.length === 0) {
         const body = {
             status:  "error",
-            message: "No saleable bundles configured on MikroTik.",
+            message: "No active offers mapped to MikroTik profiles.",
             mikrotik_profiles_found: profiles
         };
-        if (isDev) body.hint = "Add a JSON comment to each profile, e.g. /ip hotspot user profile set [find name=1hour] comment=\"{\\\"price\\\":100,\\\"name\\\":\\\"1 Hour\\\"}\"";
+        if (isDev) body.hint = "Add offers in the admin UI and ensure their 'profile' matches a MikroTik profile name.";
         return res.status(200).json(body);
     }
 
@@ -104,7 +105,8 @@ router.post("/pay", async (req, res) => {
         link_login, link_login_only, link_orig
     } = req.body || {};
 
-    const offer = await mikrotik.findOffer(bundle_id);
+    const profiles = await mikrotik.getHotspotProfiles();
+    const offer = offerService.getActiveOffers().find(o => o.id === bundle_id && profiles.includes(o.profile));
     if (!offer)                       return sendError(res, 400, "ER201", "Unknown bundle.");
     if (!validatePhoneServer(phone))  return sendError(res, 400, "ER101", "Invalid phone number. Use 237XXXXXXXXX.");
 

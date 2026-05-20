@@ -19,6 +19,7 @@
 const express  = require("express");
 const router   = express.Router();
 const mikrotik = require("../services/mikrotikService");
+const offerService = require("../services/offerService");
 
 /* ---------- auth ---------- */
 
@@ -46,21 +47,17 @@ router.use(basicAuth);
 
 /* ---------- API: list profiles + parsed metadata ---------- */
 router.get("/api/profiles", async (_req, res) => {
-    const rows = await mikrotik.getRawProfiles({ force: true });
-    const data = rows.map(r => {
-        const meta = mikrotik.parseProfileMeta(r.comment);
-        return {
-            name:            r.name,
-            "rate-limit":    r["rate-limit"]     || "",
-            "session-timeout": r["session-timeout"] || "",
-            default_speed:   mikrotik.formatRate(r["rate-limit"]) || "",
-            default_duration: r["session-timeout"] || "",
-            raw_comment:     r.comment || "",
-            meta:            meta,
-            saleable:        !!meta && Number.isFinite(Number(meta && meta.price))
-        };
+    const profiles = await mikrotik.getHotspotProfiles({ force: true });
+    const offers = offerService.getAllOffers();
+    const mapped = profiles.map(profile => {
+        const offer = offers.find(o => o.profile === profile);
+        if (offer) {
+            return { profile, mapped: true, offer };
+        } else {
+            return { profile, mapped: false };
+        }
     });
-    res.json({ status: "success", profiles: data });
+    res.json({ status: "success", profiles: mapped });
 });
 
 /* ---------- API: save metadata for a profile ---------- */
@@ -100,6 +97,29 @@ router.post("/api/profiles/:name", express.json(), async (req, res) => {
     res.json({ status: "success", written: clean });
 });
 
+/* ---------- CRUD endpoints for offers ---------- */
+// GET all offers
+router.get("/api/offers", (_req, res) => {
+    res.json({ status: "success", offers: offerService.getAllOffers() });
+});
+// POST create or update offer
+router.post("/api/offers/:profile", express.json(), (req, res) => {
+    const profile = req.params.profile;
+    const offer = req.body && req.body.offer;
+    if (!offer || typeof offer !== "object") {
+        return res.status(400).json({ status: "error", message: "Body must be {offer: {...}}." });
+    }
+    offer.profile = profile;
+    offerService.upsertOffer(offer);
+    res.json({ status: "success", offer: offerService.getOfferByProfile(profile) });
+});
+// DELETE offer
+router.delete("/api/offers/:profile", (req, res) => {
+    const profile = req.params.profile;
+    offerService.deleteOffer(profile);
+    res.json({ status: "success", deleted: profile });
+});
+
 /* ---------- HTML page ---------- */
 router.get("/", (_req, res) => {
     res.type("html").send(ADMIN_HTML);
@@ -134,8 +154,8 @@ const ADMIN_HTML = `<!doctype html>
            vertical-align: middle; font-size: 13px; }
   th { background: #f0f3f6; font-weight: 600; font-size: 12px;
        text-transform: uppercase; letter-spacing: .04em; color: #52606d; }
-  tr.saleable td:first-child::before { content: "● "; color: #2f9e44; }
-  tr.hidden td:first-child::before    { content: "● "; color: #adb5bd; }
+  tr.mapped td:first-child::before { content: "● "; color: #2f9e44; }
+  tr.unmapped td:first-child::before { content: "● "; color: #adb5bd; }
   input[type=text], input[type=number] {
         font: inherit; padding: 6px 8px; border: 1px solid #cbd2d9;
         border-radius: 4px; background: #fff; width: 100%; }
@@ -158,7 +178,7 @@ const ADMIN_HTML = `<!doctype html>
 <body>
 <header>
   <h1>HAYLO — Bundle Admin</h1>
-  <div class="sub">Edit price/name/description for each MikroTik hotspot profile. Saving writes JSON into the profile's <code>comment</code>.</div>
+  <div class="sub">Edit price/name/description for each MikroTik hotspot profile. Saving updates the offer in the database.</div>
 </header>
 <main>
   <div class="toolbar">
@@ -174,39 +194,33 @@ const ADMIN_HTML = `<!doctype html>
         <th>Description</th>
         <th>Speed</th>
         <th>Duration</th>
-        <th>Order</th>
+        <th>Active</th>
         <th class="actions">Actions</th>
       </tr>
     </thead>
     <tbody id="tbody"></tbody>
   </table>
   <div class="legend">
-    Green dot = saleable (has a valid JSON metadata comment).
-    Grey dot = hidden from the captive portal (no metadata).
-    Save with empty Price → <strong>Hide</strong> button to remove the metadata entirely.
-    Defaults shown in light text come from the profile's <code>rate-limit</code> / <code>session-timeout</code>.
+    Green dot = mapped (has an active offer). Grey dot = unmapped (no offer for this profile).<br>
+    Save to create/update an offer. Hide to remove the offer for this profile.
   </div>
 </main>
 <div id="toast" class="toast"></div>
-
 <script>
 const tbody  = document.getElementById("tbody");
 const status = document.getElementById("status");
 const toast  = document.getElementById("toast");
 document.getElementById("reload").addEventListener("click", load);
-
 function showToast(msg, kind) {
     toast.textContent = msg;
     toast.className   = "toast show " + (kind || "ok");
     setTimeout(function () { toast.className = "toast " + (kind || "ok"); }, 2500);
 }
-
 function escapeHtml(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
-        return ({"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"})[c];
+        return ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[c];
     });
 }
-
 async function load() {
     status.textContent = "Loading…";
     tbody.innerHTML = "";
@@ -228,75 +242,73 @@ async function load() {
     }
     profiles.forEach(function (p) { tbody.appendChild(renderRow(p)); });
 }
-
 function renderRow(p) {
-    const m  = p.meta || {};
+    const o  = p.offer || {};
     const tr = document.createElement("tr");
-    tr.className = p.saleable ? "saleable" : "hidden";
+    tr.className = p.mapped ? "mapped" : "unmapped";
     tr.innerHTML =
-        '<td><strong>' + escapeHtml(p.name) + '</strong>' +
-            '<div class="placeholder">' + escapeHtml(p["rate-limit"] || "") +
-            (p["session-timeout"] ? " · " + escapeHtml(p["session-timeout"]) : "") + '</div></td>' +
-        '<td><input type="text"   data-k="name"        value="' + escapeHtml(m.name || "") + '" placeholder="' + escapeHtml(p.name) + '"></td>' +
-        '<td><input type="number" data-k="price" class="price" value="' + (m.price != null ? Number(m.price) : "") + '" min="0" step="1" placeholder="(hidden)"></td>' +
-        '<td><input type="text"   data-k="description" value="' + escapeHtml(m.description || "") + '" placeholder="optional"></td>' +
-        '<td><input type="text"   data-k="speed"    class="short" value="' + escapeHtml(m.speed || "")    + '" placeholder="' + escapeHtml(p.default_speed) + '"></td>' +
-        '<td><input type="text"   data-k="duration" class="short" value="' + escapeHtml(m.duration || "") + '" placeholder="' + escapeHtml(p.default_duration) + '"></td>' +
-        '<td><input type="number" data-k="order"    class="short" value="' + (m.order != null ? Number(m.order) : "") + '" min="0" step="1" placeholder="auto"></td>' +
+        '<td><strong>' + escapeHtml(p.profile) + '</strong></td>' +
+        '<td><input type="text"   data-k="name"        value="' + escapeHtml(o.name || "") + '" placeholder="' + escapeHtml(p.profile) + '"></td>' +
+        '<td><input type="number" data-k="price" class="price" value="' + (o.price != null ? Number(o.price) : "") + '" min="0" step="1" placeholder="(hidden)"></td>' +
+        '<td><input type="text"   data-k="description" value="' + escapeHtml(o.description || "") + '" placeholder="optional"></td>' +
+        '<td><input type="text"   data-k="speed"    class="short" value="' + escapeHtml(o.speed || "")    + '" placeholder="Mbps"></td>' +
+        '<td><input type="text"   data-k="duration" class="short" value="' + escapeHtml(o.duration || "") + '" placeholder="e.g. 1d"></td>' +
+        '<td><input type="checkbox" data-k="active" ' + (o.active ? 'checked' : '') + '></td>' +
         '<td class="actions">' +
             '<button class="primary" data-act="save">Save</button> ' +
             '<button class="danger"  data-act="hide">Hide</button>' +
         '</td>';
-
-    tr.querySelector('[data-act="save"]').addEventListener("click", function () { save(tr, p.name); });
-    tr.querySelector('[data-act="hide"]').addEventListener("click", function () { hide(tr, p.name); });
+    tr.querySelector('[data-act="save"]').addEventListener("click", function () { save(tr, p.profile); });
+    tr.querySelector('[data-act="hide"]').addEventListener("click", function () { hide(tr, p.profile); });
     return tr;
 }
-
 function collect(tr) {
     const obj = {};
     tr.querySelectorAll("[data-k]").forEach(function (el) {
         const k = el.getAttribute("data-k");
-        const v = el.value.trim();
-        if (v !== "") obj[k] = v;
+        if (el.type === "checkbox") {
+            obj[k] = el.checked ? 1 : 0;
+        } else {
+            const v = el.value.trim();
+            if (v !== "") obj[k] = v;
+        }
     });
     return obj;
 }
-
-async function send(tr, name, body, okMsg) {
-    const btns = tr.querySelectorAll("button");
-    btns.forEach(function (b) { b.disabled = true; });
-    try {
-        const r = await fetch("/admin/api/profiles/" + encodeURIComponent(name), {
-            method:  "POST",
-            headers: { "Content-Type": "application/json" },
-            body:    JSON.stringify(body)
-        });
-        const j = await r.json().catch(function () { return {}; });
-        if (!r.ok || j.status !== "success") throw new Error(j.message || ("HTTP " + r.status));
-        showToast(okMsg, "ok");
-        await load();
-    } catch (e) {
-        showToast("Save failed: " + e.message, "err");
-    } finally {
-        btns.forEach(function (b) { b.disabled = false; });
-    }
-}
-
-function save(tr, name) {
-    const meta = collect(tr);
-    if (meta.price === undefined) {
+async function save(tr, profile) {
+    const offer = collect(tr);
+    if (!offer.price) {
         showToast("Set a price, or click Hide.", "err");
         return;
     }
-    send(tr, name, { meta: meta }, "Saved " + name);
+    try {
+        const r = await fetch("/admin/api/offers/" + encodeURIComponent(profile), {
+            method:  "POST",
+            headers: { "Content-Type": "application/json" },
+            body:    JSON.stringify({ offer })
+        });
+        const j = await r.json().catch(function () { return {}; });
+        if (!r.ok || j.status !== "success") throw new Error(j.message || ("HTTP " + r.status));
+        showToast("Saved " + profile, "ok");
+        await load();
+    } catch (e) {
+        showToast("Save failed: " + e.message, "err");
+    }
 }
-
-function hide(tr, name) {
-    if (!confirm("Hide bundle '" + name + "'? This clears its comment.")) return;
-    send(tr, name, { meta: null }, "Hidden " + name);
+async function hide(tr, profile) {
+    if (!confirm("Hide offer for '" + profile + "'? This will remove it from sale.")) return;
+    try {
+        const r = await fetch("/admin/api/offers/" + encodeURIComponent(profile), {
+            method:  "DELETE"
+        });
+        const j = await r.json().catch(function () { return {}; });
+        if (!r.ok || j.status !== "success") throw new Error(j.message || ("HTTP " + r.status));
+        showToast("Hidden " + profile, "ok");
+        await load();
+    } catch (e) {
+        showToast("Hide failed: " + e.message, "err");
+    }
 }
-
 load();
 </script>
 </body>
