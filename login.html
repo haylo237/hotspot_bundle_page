@@ -1,24 +1,38 @@
 <!--
 ================================================================================
   HAYLO INTERNET — MikroTik Hotspot Captive Portal (login.html)
+  Consolidated single-file portal: bundles + payment success + auto-login +
+  manual login + receipt + connection info + error display.
 ================================================================================
-  Purpose:
-    - Display available internet bundles
-    - Let the user select a bundle
-    - Redirect to an external payment endpoint
-    - Pass MikroTik hotspot variables ($(mac), $(ip), $(link-login), $(link-orig), $(username))
-      to the backend through URL query parameters.
+  Flow:
+    1. Client connects to WiFi → MikroTik serves this file.
+    2. If the URL does NOT contain ?paid=true → show BUNDLE selection mode.
+    3. Client clicks "Buy Now" → redirect to backend Campay checkout:
+         BACKEND_CHECKOUT_URL?bundle_id=...&bundle_name=...&price=...
+           &duration=...&speed=...&mac=$(mac)&ip=$(ip)
+           &link_login=$(link-login)&link_orig=$(link-orig)
+    4. Backend creates Campay payment, verifies it (webhook), creates the
+       MikroTik user via MikroTik API, then redirects the client back to:
+         http://10.5.50.1/login?paid=true&username=...&password=...&bundle=...
+           &amount=...&duration=...&speed=...&reference=...&receipt=...
+           &mac=...&ip=...
+    5. This page detects ?paid=true and switches to SUCCESS mode:
+         - shows credentials, details
+         - "Connect Now" auto-submits the hidden MikroTik login form
+         - "Manual Login" reveals a username/password form
+         - "Connection Info" shows full account summary
+         - "Download Receipt" prints or downloads a receipt
+    6. If MikroTik returns a login error, $(error) is rendered in an error bar.
 
-  Deployment:
-    - Upload this file as `login.html` into the MikroTik RouterOS hotspot folder
-      (Files > hotspot/). RouterOS will substitute the $(...) placeholders at runtime.
-    - No external network calls are required for the page to render — everything is
-      self-contained (HTML + CSS + Vanilla JS).
+  SECURITY:
+    - Campay API keys MUST remain server-side. This page never calls Campay.
+    - Bundle pricing here is for display only; backend re-validates by bundle_id.
 
-  Notes:
-    - DO NOT add external CDN dependencies; hotspot clients may not yet have internet.
-    - All MikroTik variable substitutions are clearly marked with comments.
-    - Backend payment integration is marked with the BACKEND-INTEGRATION-POINT tag.
+  >>>>> CHANGE these in the <script> below for your deployment <<<<<
+    - BACKEND_CHECKOUT_URL
+    - ISP_NAME
+    - SUPPORT_PHONE / SUPPORT_EMAIL
+    - BUNDLES (prices, speeds, durations)
 ================================================================================
 -->
 <!DOCTYPE html>
@@ -31,9 +45,6 @@
     <meta name="description" content="HAYLO INTERNET — Connect to high-speed WiFi by purchasing an internet bundle." />
     <title>HAYLO INTERNET — Connect to WiFi</title>
 
-    <!-- ============================================================
-         STYLES — Pure CSS, mobile-first, glassmorphism, dark gradient
-         ============================================================ -->
     <style>
         /* ---------- Reset & base ---------- */
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -47,11 +58,9 @@
             min-height: 100vh;
             overflow-x: hidden;
             -webkit-font-smoothing: antialiased;
-            -moz-osx-font-smoothing: grayscale;
             line-height: 1.5;
         }
-
-        /* Subtle animated glow blobs in background */
+        /* Background blobs */
         body::before, body::after {
             content: "";
             position: fixed;
@@ -65,7 +74,6 @@
         }
         body::before { background: #2b6cff; top: -120px; left: -120px; }
         body::after  { background: #b53bff; bottom: -160px; right: -120px; animation-delay: -7s; }
-
         @keyframes float {
             0%, 100% { transform: translate(0,0) scale(1); }
             50%      { transform: translate(40px, 30px) scale(1.05); }
@@ -73,30 +81,22 @@
 
         /* ---------- Layout ---------- */
         .wrap {
-            position: relative;
-            z-index: 1;
-            max-width: 1100px;
-            margin: 0 auto;
+            position: relative; z-index: 1;
+            max-width: 1100px; margin: 0 auto;
             padding: 20px 18px 40px;
         }
 
-        /* ---------- Header / Logo ---------- */
+        /* ---------- Header ---------- */
         header.topbar {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-            padding: 14px 16px;
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 12px; padding: 14px 16px;
             border-radius: 18px;
             background: rgba(255,255,255,0.06);
-            backdrop-filter: blur(14px);
-            -webkit-backdrop-filter: blur(14px);
+            backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
             border: 1px solid rgba(255,255,255,0.10);
             box-shadow: 0 8px 30px rgba(0,0,0,0.35);
         }
-        .logo {
-            display: flex; align-items: center; gap: 12px;
-        }
+        .logo { display: flex; align-items: center; gap: 12px; }
         .logo-mark {
             width: 42px; height: 42px;
             border-radius: 12px;
@@ -130,31 +130,36 @@
             100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); }
         }
 
-        /* ---------- Hero / Welcome ---------- */
-        .hero {
-            text-align: center;
-            padding: 40px 10px 24px;
-        }
+        /* ---------- Hero ---------- */
+        .hero { text-align: center; padding: 40px 10px 16px; }
         .hero h1 {
-            font-size: clamp(26px, 4.5vw, 40px);
-            font-weight: 800;
+            font-size: clamp(26px, 4.5vw, 40px); font-weight: 800;
             background: linear-gradient(90deg, #ffffff 0%, #b6c7ff 60%, #e3b9ff 100%);
-            -webkit-background-clip: text;
-            background-clip: text;
-            color: transparent;
+            -webkit-background-clip: text; background-clip: text; color: transparent;
             letter-spacing: -0.5px;
         }
         .hero p {
-            margin-top: 10px;
-            color: #b6bedc;
+            margin-top: 10px; color: #b6bedc;
             font-size: clamp(14px, 2.2vw, 16px);
-            max-width: 620px;
-            margin-left: auto; margin-right: auto;
+            max-width: 620px; margin-left: auto; margin-right: auto;
         }
 
-        /* ---------- Promo banner (optional) ---------- */
+        /* ---------- MikroTik error banner (rendered from $(error)) ---------- */
+        .mt-error {
+            display: none;
+            margin: 14px auto 0;
+            padding: 10px 14px;
+            border-radius: 12px;
+            background: rgba(248,113,113,0.12);
+            border: 1px solid rgba(248,113,113,0.40);
+            color: #fca5a5;
+            font-size: 13px; text-align: center;
+        }
+        .mt-error.show { display: block; }
+
+        /* ---------- Promo ---------- */
         .promo {
-            margin: 8px 0 18px;
+            margin: 14px 0 18px;
             padding: 12px 16px;
             border-radius: 14px;
             background: linear-gradient(90deg, rgba(255,193,7,0.15), rgba(255,87,34,0.15));
@@ -170,13 +175,8 @@
             box-shadow: 0 0 12px #ffc107;
         }
 
-        /* ---------- Bundles grid ---------- */
-        .bundles {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 16px;
-            margin-top: 10px;
-        }
+        /* ---------- Bundles ---------- */
+        .bundles { display: grid; grid-template-columns: 1fr; gap: 16px; margin-top: 10px; }
         @media (min-width: 560px) { .bundles { grid-template-columns: repeat(2, 1fr); } }
         @media (min-width: 920px) { .bundles { grid-template-columns: repeat(4, 1fr); } }
 
@@ -185,82 +185,202 @@
             padding: 20px 18px;
             border-radius: 20px;
             background: rgba(255,255,255,0.06);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
+            backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
             border: 1px solid rgba(255,255,255,0.10);
             box-shadow: 0 10px 30px rgba(0,0,0,0.35);
             transition: transform .25s ease, box-shadow .25s ease, border-color .25s ease;
             overflow: hidden;
         }
         .card::before {
-            content: "";
-            position: absolute; inset: 0;
+            content: ""; position: absolute; inset: 0;
             background: linear-gradient(135deg, rgba(79,140,255,0.18), rgba(177,75,255,0.10) 60%, transparent);
-            opacity: 0; transition: opacity .25s ease;
-            pointer-events: none;
+            opacity: 0; transition: opacity .25s ease; pointer-events: none;
         }
-        .card:hover {
-            transform: translateY(-4px);
-            border-color: rgba(255,255,255,0.22);
-            box-shadow: 0 18px 40px rgba(0,0,0,0.45);
-        }
+        .card:hover { transform: translateY(-4px); border-color: rgba(255,255,255,0.22);
+            box-shadow: 0 18px 40px rgba(0,0,0,0.45); }
         .card:hover::before { opacity: 1; }
-
         .card .badge {
             position: absolute; top: 12px; right: 12px;
             font-size: 10px; font-weight: 700;
             padding: 4px 8px; border-radius: 999px;
             background: rgba(255,255,255,0.10);
-            color: #cfd6f0;
-            border: 1px solid rgba(255,255,255,0.15);
+            color: #cfd6f0; border: 1px solid rgba(255,255,255,0.15);
             text-transform: uppercase; letter-spacing: 0.6px;
         }
         .card.popular .badge {
             background: linear-gradient(90deg, #ffb84d, #ff5a8a);
             color: #1a0a1d; border-color: transparent;
         }
-
-        .card h3 {
-            font-size: 18px; font-weight: 700; color: #fff;
-            margin-bottom: 4px;
-        }
+        .card h3 { font-size: 18px; font-weight: 700; color: #fff; margin-bottom: 4px; }
         .card .duration { color: #9aa3c7; font-size: 12px; margin-bottom: 14px; }
-
-        .price {
-            display: flex; align-items: baseline; gap: 6px;
-            margin-bottom: 14px;
-        }
+        .price { display: flex; align-items: baseline; gap: 6px; margin-bottom: 14px; }
         .price .amount {
             font-size: 28px; font-weight: 800;
             background: linear-gradient(90deg, #74a4ff, #c790ff);
             -webkit-background-clip: text; background-clip: text; color: transparent;
         }
         .price .currency { font-size: 13px; color: #b6bedc; font-weight: 600; }
-
         .features { list-style: none; margin-bottom: 16px; }
         .features li {
             display: flex; align-items: center; gap: 8px;
-            color: #cfd6f0; font-size: 13px;
-            padding: 5px 0;
+            color: #cfd6f0; font-size: 13px; padding: 5px 0;
         }
         .features li svg { color: #6ee7b7; width: 14px; height: 14px; flex-shrink: 0; }
 
         .btn-buy {
-            width: 100%;
-            padding: 12px 14px;
+            width: 100%; padding: 12px 14px;
             border: none; cursor: pointer;
             border-radius: 12px;
             font-size: 14px; font-weight: 700;
             color: #fff;
             background: linear-gradient(135deg, #4f8cff 0%, #b14bff 100%);
             box-shadow: 0 8px 22px rgba(79,140,255,0.35);
-            transition: transform .15s ease, box-shadow .2s ease, filter .2s ease;
+            transition: transform .15s ease, filter .2s ease;
             -webkit-tap-highlight-color: transparent;
         }
         .btn-buy:hover { transform: translateY(-1px); filter: brightness(1.05); }
         .btn-buy:active { transform: translateY(0); }
 
-        /* ---------- Hotspot info (hidden by default, toggle to show) ---------- */
+        /* ---------- Success panel ---------- */
+        .success-wrap { max-width: 720px; margin: 24px auto 0; }
+        .success-card {
+            padding: 26px 22px;
+            border-radius: 22px;
+            background: rgba(255,255,255,0.06);
+            backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255,255,255,0.10);
+            box-shadow: 0 18px 40px rgba(0,0,0,0.4);
+            text-align: center;
+        }
+        .check {
+            width: 72px; height: 72px;
+            margin: 4px auto 14px;
+            border-radius: 50%;
+            background: rgba(52,211,153,0.16);
+            border: 2px solid rgba(52,211,153,0.45);
+            display: grid; place-items: center;
+            animation: pop .35s ease;
+        }
+        .check svg { width: 36px; height: 36px; color: #6ee7b7; }
+        @keyframes pop { from{transform:scale(.7);opacity:0;} to{transform:scale(1);opacity:1;} }
+
+        .success-card h1 {
+            font-size: clamp(22px, 4vw, 28px);
+            background: linear-gradient(90deg, #fff, #b6c7ff);
+            -webkit-background-clip: text; background-clip: text; color: transparent;
+        }
+        .success-card .sub { color:#b6bedc; margin-top:6px; font-size:14px; }
+
+        .creds {
+            margin-top: 16px;
+            border-radius: 14px;
+            padding: 14px;
+            background: linear-gradient(135deg, rgba(79,140,255,0.18), rgba(177,75,255,0.18));
+            border: 1px solid rgba(255,255,255,0.18);
+            display: grid; grid-template-columns: 1fr; gap: 10px;
+        }
+        @media (min-width: 480px) { .creds { grid-template-columns: 1fr 1fr; } }
+        .cred {
+            display: flex; align-items: center; justify-content: space-between; gap: 8px;
+            background: rgba(0,0,0,0.25);
+            border: 1px solid rgba(255,255,255,0.10);
+            border-radius: 10px;
+            padding: 10px 12px;
+        }
+        .cred .lbl { font-size: 11px; color: #b6bedc; text-transform: uppercase; letter-spacing: .6px; }
+        .cred .val { font-size: 15px; font-weight: 700; color: #fff; font-family: ui-monospace, Menlo, Consolas, monospace; }
+        .copy-btn {
+            background: rgba(255,255,255,0.08);
+            border: 1px solid rgba(255,255,255,0.14);
+            color:#cfd6f0; cursor:pointer;
+            padding:5px 8px; border-radius:8px; font-size:11px;
+        }
+        .copy-btn:hover { background: rgba(255,255,255,0.14); }
+
+        .details {
+            margin-top: 16px; text-align: left;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 14px;
+            padding: 6px 14px;
+        }
+        .drow {
+            display: flex; justify-content: space-between; gap: 12px;
+            padding: 10px 0;
+            border-bottom: 1px dashed rgba(255,255,255,0.08);
+            font-size: 13px;
+        }
+        .drow:last-child { border-bottom: none; }
+        .drow .k { color: #9aa3c7; }
+        .drow .v { color: #e8ecf8; font-weight: 600; word-break: break-all; text-align: right; }
+
+        .actions {
+            margin-top: 18px;
+            display: flex; gap: 10px; flex-wrap: wrap; justify-content: center;
+        }
+        .btn {
+            padding: 12px 16px; border-radius: 12px; border: none; cursor: pointer;
+            font-size: 13px; font-weight: 700;
+            transition: filter .15s ease, transform .15s ease;
+        }
+        .btn-primary { background: linear-gradient(135deg, #4f8cff, #b14bff); color: #fff;
+            box-shadow: 0 8px 22px rgba(79,140,255,0.35); }
+        .btn-ghost { background: rgba(255,255,255,0.08); color: #e8ecf8; border: 1px solid rgba(255,255,255,0.15); }
+        .btn:hover { filter: brightness(1.08); }
+        .btn:active { transform: translateY(1px); }
+
+        /* Manual login + Connection info panels (toggled) */
+        .panel {
+            display: none;
+            margin-top: 16px;
+            text-align: left;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 14px;
+            padding: 16px;
+        }
+        .panel.open { display: block; }
+        .panel h3 {
+            font-size: 14px; color: #fff; margin-bottom: 10px;
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .panel .close-x {
+            background: rgba(255,255,255,0.08); color: #cfd6f0;
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 8px; padding: 4px 8px;
+            font-size: 11px; cursor: pointer;
+        }
+        .panel .close-x:hover { background: rgba(255,255,255,0.14); }
+
+        .input {
+            width: 100%;
+            padding: 12px 14px;
+            background: rgba(0,0,0,0.25);
+            border: 1px solid rgba(255,255,255,0.12);
+            color: #fff;
+            border-radius: 10px;
+            font-size: 14px; outline: none;
+            transition: border-color .15s ease;
+            margin-bottom: 10px;
+        }
+        .input:focus { border-color: rgba(79,140,255,0.6); }
+        .input-label {
+            display: block;
+            font-size: 11px; color: #b6bedc;
+            text-transform: uppercase; letter-spacing: .6px;
+            margin-bottom: 4px;
+        }
+        .pass-wrap { position: relative; }
+        .pass-wrap .toggle-pass {
+            position: absolute; right: 10px; top: 10px;
+            background: rgba(255,255,255,0.06);
+            border: 1px solid rgba(255,255,255,0.12);
+            color: #cfd6f0; cursor: pointer;
+            padding: 5px 8px; border-radius: 8px; font-size: 11px;
+        }
+        .pass-wrap .toggle-pass:hover { background: rgba(255,255,255,0.12); }
+
+        /* ---------- Hotspot info (bundle mode toggle) ---------- */
         .info-toggle {
             margin: 28px auto 0;
             display: flex; justify-content: center;
@@ -271,42 +391,28 @@
             border: 1px solid rgba(255,255,255,0.12);
             padding: 8px 14px; border-radius: 999px;
             font-size: 12px; cursor: pointer;
-            transition: background .2s ease;
         }
         .info-toggle button:hover { background: rgba(255,255,255,0.10); }
 
         .hotspot-info {
-            margin: 16px auto 0;
-            max-width: 560px;
-            padding: 16px 18px;
-            border-radius: 16px;
+            margin: 16px auto 0; max-width: 560px;
+            padding: 16px 18px; border-radius: 16px;
             background: rgba(255,255,255,0.04);
             border: 1px solid rgba(255,255,255,0.08);
-            font-size: 13px;
-            color: #b6bedc;
-            display: none; /* hidden by default — toggled via JS */
+            font-size: 13px; color: #b6bedc;
+            display: none;
         }
         .hotspot-info.open { display: block; }
-        .hotspot-info .row {
-            display: flex; justify-content: space-between; gap: 12px;
-            padding: 6px 0;
-            border-bottom: 1px dashed rgba(255,255,255,0.08);
-        }
-        .hotspot-info .row:last-child { border-bottom: none; }
-        .hotspot-info .row span:first-child { color: #9aa3c7; }
-        .hotspot-info .row span:last-child  { color: #e8ecf8; font-weight: 600; word-break: break-all; text-align: right; }
+        .hotspot-info .drow:last-child { border-bottom: none; }
 
         /* ---------- Footer ---------- */
         footer {
-            margin-top: 36px;
-            text-align: center;
-            color: #8a93b7;
-            font-size: 12px;
-            padding: 10px;
+            margin-top: 36px; text-align: center;
+            color: #8a93b7; font-size: 12px; padding: 10px;
         }
         footer .links {
-            margin-bottom: 8px;
-            display: flex; gap: 14px; justify-content: center; flex-wrap: wrap;
+            margin-bottom: 8px; display: flex; gap: 14px;
+            justify-content: center; flex-wrap: wrap;
         }
         footer .links a, footer .links button {
             color: #b6bedc; text-decoration: none;
@@ -315,21 +421,17 @@
         }
         footer .links a:hover, footer .links button:hover { color: #fff; text-decoration: underline; }
 
-        /* ---------- Modal (loader / payment / terms) ---------- */
+        /* ---------- Modal ---------- */
         .modal {
             position: fixed; inset: 0;
             background: rgba(5, 7, 15, 0.75);
-            backdrop-filter: blur(6px);
-            -webkit-backdrop-filter: blur(6px);
-            display: none;
-            align-items: center; justify-content: center;
-            z-index: 100;
-            padding: 20px;
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+            display: none; align-items: center; justify-content: center;
+            z-index: 100; padding: 20px;
             animation: fadeIn .2s ease;
         }
         .modal.open { display: flex; }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-
         .modal-card {
             width: 100%; max-width: 420px;
             padding: 26px 22px;
@@ -338,13 +440,11 @@
             border: 1px solid rgba(255,255,255,0.10);
             box-shadow: 0 24px 60px rgba(0,0,0,0.55);
             text-align: center;
-            animation: pop .25s ease;
+            animation: popIn .25s ease;
         }
-        @keyframes pop { from { transform: scale(.94); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+        @keyframes popIn { from { transform: scale(.94); opacity: 0; } to { transform: scale(1); opacity: 1; } }
         .modal-card h2 { font-size: 18px; margin-bottom: 8px; }
         .modal-card p  { color: #b6bedc; font-size: 13px; margin-bottom: 14px; }
-
-        /* Loading spinner */
         .spinner {
             width: 48px; height: 48px;
             margin: 4px auto 14px;
@@ -354,63 +454,46 @@
             animation: spin 0.9s linear infinite;
         }
         @keyframes spin { to { transform: rotate(360deg); } }
-
-        /* Success / Error icons */
-        .icon-success, .icon-error {
+        .icon-error {
             width: 56px; height: 56px;
             border-radius: 50%;
             display: grid; place-items: center;
             margin: 4px auto 12px;
+            background: rgba(248,113,113,0.15); color: #fca5a5;
+            border: 1px solid rgba(248,113,113,0.4);
         }
-        .icon-success { background: rgba(52,211,153,0.15); color: #6ee7b7; border: 1px solid rgba(52,211,153,0.4); }
-        .icon-error   { background: rgba(248,113,113,0.15); color: #fca5a5; border: 1px solid rgba(248,113,113,0.4); }
-        .icon-success svg, .icon-error svg { width: 30px; height: 30px; }
+        .icon-error svg { width: 30px; height: 30px; }
 
-        .modal-actions {
-            display: flex; gap: 10px; justify-content: center; margin-top: 8px; flex-wrap: wrap;
-        }
-        .btn {
-            padding: 10px 16px; border-radius: 10px; cursor: pointer;
-            font-size: 13px; font-weight: 600; border: none;
-            transition: filter .15s ease, transform .15s ease;
-        }
-        .btn-primary { background: linear-gradient(135deg, #4f8cff, #b14bff); color: #fff; }
-        .btn-ghost   { background: rgba(255,255,255,0.08); color: #e8ecf8; border: 1px solid rgba(255,255,255,0.15); }
-        .btn:hover   { filter: brightness(1.08); }
-        .btn:active  { transform: translateY(1px); }
-
-        /* Toast notifications */
+        /* Toasts */
         .toast-wrap {
-            position: fixed; top: 16px; left: 50%;
-            transform: translateX(-50%);
-            z-index: 200;
-            display: flex; flex-direction: column; gap: 8px;
+            position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+            z-index: 200; display: flex; flex-direction: column; gap: 8px;
             pointer-events: none;
         }
         .toast {
-            min-width: 240px; max-width: 90vw;
-            padding: 12px 16px; border-radius: 12px;
             background: rgba(20,24,48,0.95);
             border: 1px solid rgba(255,255,255,0.10);
-            color: #e8ecf8; font-size: 13px;
-            box-shadow: 0 10px 24px rgba(0,0,0,0.4);
+            color:#e8ecf8; font-size:13px;
+            padding: 10px 14px; border-radius: 10px;
             animation: slideDown .25s ease;
         }
         .toast.success { border-color: rgba(52,211,153,0.45); }
         .toast.error   { border-color: rgba(248,113,113,0.45); }
-        @keyframes slideDown { from { transform: translateY(-12px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        @keyframes slideDown { from{transform:translateY(-10px);opacity:0;} to{transform:translateY(0);opacity:1;} }
 
-        /* Terms modal scroll body */
+        /* Terms scroll */
         .terms-body {
-            text-align: left;
-            max-height: 50vh; overflow-y: auto;
-            padding: 10px 4px;
-            color: #cfd6f0; font-size: 13px;
+            text-align: left; max-height: 50vh; overflow-y: auto;
+            padding: 10px 4px; color: #cfd6f0; font-size: 13px;
         }
         .terms-body h4 { margin-top: 10px; margin-bottom: 4px; color: #fff; font-size: 13px; }
         .terms-body p  { margin-bottom: 8px; }
 
-        /* Reduced motion */
+        /* Hidden helper */
+        .visually-hidden { position: absolute !important; width: 1px; height: 1px;
+            padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0);
+            white-space: nowrap; border: 0; }
+
         @media (prefers-reduced-motion: reduce) {
             *, *::before, *::after { animation: none !important; transition: none !important; }
         }
@@ -418,18 +501,24 @@
 </head>
 <body>
 
-<!-- Toast container (success/error notifications appear here) -->
+<!-- Hidden auto-login form. Submitted programmatically by connectNow().
+     RouterOS replaces $(link-login-only) and $(link-orig) at runtime. -->
+<form id="autoLoginForm" name="login" action="$(link-login-only)" method="post" class="visually-hidden" aria-hidden="true">
+    <input type="hidden" name="username" id="autoUsername" />
+    <input type="hidden" name="password" id="autoPassword" />
+    <input type="hidden" name="dst" value="$(link-orig)" />
+    <input type="hidden" name="popup" value="true" />
+</form>
+
+<!-- Toast container -->
 <div class="toast-wrap" id="toastWrap" aria-live="polite" aria-atomic="true"></div>
 
 <div class="wrap">
 
-    <!-- ============================================================
-         HEADER — Logo + Connected status
-         ============================================================ -->
+    <!-- ===== Header (shared) ===== -->
     <header class="topbar">
         <div class="logo">
             <div class="logo-mark" aria-hidden="true">
-                <!-- Inline SVG WiFi icon (no external dependency) -->
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M5 12.55a11 11 0 0 1 14 0"/>
                     <path d="M1.5 9a16 16 0 0 1 21 0"/>
@@ -438,7 +527,7 @@
                 </svg>
             </div>
             <div class="logo-text">
-                <span class="brand">HAYLO INTERNET</span>
+                <span class="brand" id="brandName">HAYLO INTERNET</span>
                 <span class="tag">High-Speed Public WiFi</span>
             </div>
         </div>
@@ -448,119 +537,208 @@
         </div>
     </header>
 
-    <!-- ============================================================
-         HERO / WELCOME
-         ============================================================ -->
-    <section class="hero">
-        <h1>Welcome to HAYLO INTERNET</h1>
-        <p>You're connected to our hotspot. Choose a bundle below to unlock fast, secure internet access.</p>
-    </section>
-
-    <!-- Optional promo banner -->
-    <div class="promo" role="status">
-        <span class="dot" aria-hidden="true"></span>
-        <span>Limited offer: Get <strong>10% extra time</strong> on Weekly and Monthly bundles today!</span>
+    <!-- MikroTik login error from $(error). Only shown if RouterOS substitutes a non-empty value. -->
+    <div class="mt-error" id="mtError">
+        <strong>Login error:</strong>
+        <span id="mtErrorText">$(error)</span>
     </div>
 
     <!-- ============================================================
-         BUNDLES GRID
-         Each card calls selectBundle('<id>') on click of "Buy Now".
-         The id matches what the backend payment endpoint expects.
+         MODE: BUNDLE SELECTION
+         Shown when ?paid=true is NOT present.
          ============================================================ -->
-    <section class="bundles" id="bundlesGrid">
+    <section id="bundleMode">
+        <div class="hero">
+            <h1>Welcome to HAYLO INTERNET</h1>
+            <p>You're connected to our hotspot. Choose a bundle below to unlock fast, secure internet access.</p>
+        </div>
 
-        <!-- Bundle 1: 1 Hour -->
-        <article class="card" data-bundle="1hour">
-            <span class="badge">Quick</span>
-            <h3>1 Hour Pass</h3>
-            <p class="duration">Valid for 60 minutes</p>
-            <div class="price"><span class="amount">100</span><span class="currency">XAF</span></div>
-            <ul class="features">
-                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Speed up to 3 Mbps</li>
-                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> 1 device</li>
-                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Instant activation</li>
-            </ul>
-            <button class="btn-buy" onclick="selectBundle('1hour')">Buy Now</button>
-        </article>
+        <div class="promo" role="status">
+            <span class="dot" aria-hidden="true"></span>
+            <span>Limited offer: Get <strong>10% extra time</strong> on Weekly and Monthly bundles today!</span>
+        </div>
 
-        <!-- Bundle 2: 1 Day -->
-        <article class="card" data-bundle="1day">
-            <span class="badge">Popular</span>
-            <h3>1 Day Pass</h3>
-            <p class="duration">Valid for 24 hours</p>
-            <div class="price"><span class="amount">500</span><span class="currency">XAF</span></div>
-            <ul class="features">
-                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Speed up to 5 Mbps</li>
-                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> 1 device</li>
-                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Streaming friendly</li>
-            </ul>
-            <button class="btn-buy" onclick="selectBundle('1day')">Buy Now</button>
-        </article>
+        <!-- Bundle cards. Each calls selectBundle(<id>) → redirects to backend. -->
+        <section class="bundles" id="bundlesGrid">
+            <article class="card" data-bundle="1hour">
+                <span class="badge">Quick</span>
+                <h3>1 Hour Pass</h3>
+                <p class="duration">Valid for 60 minutes</p>
+                <div class="price"><span class="amount">100</span><span class="currency">XAF</span></div>
+                <ul class="features">
+                    <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Speed up to 3 Mbps</li>
+                    <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> 1 device</li>
+                    <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Instant activation</li>
+                </ul>
+                <button class="btn-buy" onclick="selectBundle('1hour')">Buy Now</button>
+            </article>
 
-        <!-- Bundle 3: 1 Week -->
-        <article class="card popular" data-bundle="1week">
-            <span class="badge">Best Value</span>
-            <h3>1 Week Pass</h3>
-            <p class="duration">Valid for 7 days</p>
-            <div class="price"><span class="amount">2,000</span><span class="currency">XAF</span></div>
-            <ul class="features">
-                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Speed up to 10 Mbps</li>
-                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> 1 device</li>
-                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> HD streaming & gaming</li>
-            </ul>
-            <button class="btn-buy" onclick="selectBundle('1week')">Buy Now</button>
-        </article>
+            <article class="card" data-bundle="1day">
+                <span class="badge">Popular</span>
+                <h3>1 Day Pass</h3>
+                <p class="duration">Valid for 24 hours</p>
+                <div class="price"><span class="amount">500</span><span class="currency">XAF</span></div>
+                <ul class="features">
+                    <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Speed up to 5 Mbps</li>
+                    <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> 1 device</li>
+                    <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Streaming friendly</li>
+                </ul>
+                <button class="btn-buy" onclick="selectBundle('1day')">Buy Now</button>
+            </article>
 
-        <!-- Bundle 4: 1 Month -->
-        <article class="card" data-bundle="1month">
-            <span class="badge">Premium</span>
-            <h3>1 Month Pass</h3>
-            <p class="duration">Valid for 30 days</p>
-            <div class="price"><span class="amount">5,000</span><span class="currency">XAF</span></div>
-            <ul class="features">
-                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Unlimited speed</li>
-                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> 1 device</li>
-                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Priority support</li>
-            </ul>
-            <button class="btn-buy" onclick="selectBundle('1month')">Buy Now</button>
-        </article>
+            <article class="card popular" data-bundle="1week">
+                <span class="badge">Best Value</span>
+                <h3>1 Week Pass</h3>
+                <p class="duration">Valid for 7 days</p>
+                <div class="price"><span class="amount">2,000</span><span class="currency">XAF</span></div>
+                <ul class="features">
+                    <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Speed up to 10 Mbps</li>
+                    <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> 1 device</li>
+                    <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> HD streaming & gaming</li>
+                </ul>
+                <button class="btn-buy" onclick="selectBundle('1week')">Buy Now</button>
+            </article>
 
+            <article class="card" data-bundle="1month">
+                <span class="badge">Premium</span>
+                <h3>1 Month Pass</h3>
+                <p class="duration">Valid for 30 days</p>
+                <div class="price"><span class="amount">5,000</span><span class="currency">XAF</span></div>
+                <ul class="features">
+                    <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Unlimited speed</li>
+                    <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> 1 device</li>
+                    <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Priority support</li>
+                </ul>
+                <button class="btn-buy" onclick="selectBundle('1month')">Buy Now</button>
+            </article>
+        </section>
+
+        <!-- Existing-user shortcut: open manual login on the bundle screen too -->
+        <div class="info-toggle">
+            <button type="button" onclick="showManualLogin()">Already have an account? Login</button>
+        </div>
+
+        <!-- Manual login panel (also reused in success mode) -->
+        <div class="success-wrap">
+            <div class="panel" id="manualLoginPanel">
+                <h3>Manual Login
+                    <button type="button" class="close-x" onclick="hideManualLogin()">Close</button>
+                </h3>
+                <!-- MikroTik-compatible manual login form -->
+                <form name="manualLogin" action="$(link-login-only)" method="post" onsubmit="return manualLoginBeforeSubmit();">
+                    <label class="input-label" for="mUser">Username</label>
+                    <input class="input" type="text" id="mUser" name="username"
+                           autocomplete="username" autocapitalize="off" spellcheck="false" required />
+                    <label class="input-label" for="mPass">Password</label>
+                    <div class="pass-wrap">
+                        <input class="input" type="password" id="mPass" name="password"
+                               autocomplete="current-password" required />
+                        <button type="button" class="toggle-pass" onclick="togglePass('mPass', this)">Show</button>
+                    </div>
+                    <input type="hidden" name="dst" value="$(link-orig)" />
+                    <input type="hidden" name="popup" value="true" />
+                    <button type="submit" class="btn btn-primary" style="width:100%; margin-top:6px;">Login</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Hotspot info panel (hidden by default) -->
+        <div class="info-toggle">
+            <button type="button" onclick="toggleHotspotInfo()" id="infoToggleBtn">Show connection details</button>
+        </div>
+        <section class="hotspot-info" id="hotspotInfo" aria-hidden="true">
+            <div class="drow"><span class="k">Client IP</span><span class="v" id="infoIp">$(ip)</span></div>
+            <div class="drow"><span class="k">MAC Address</span><span class="v" id="infoMac">$(mac)</span></div>
+            <div class="drow"><span class="k">Username</span><span class="v" id="infoUser">$(username)</span></div>
+            <div class="drow"><span class="k">Router / Hotspot</span><span class="v" id="infoHost">$(hostname)</span></div>
+        </section>
     </section>
 
     <!-- ============================================================
-         HOTSPOT INFO PANEL (hidden by default)
-         Values are injected by MikroTik RouterOS via $(...) variables.
+         MODE: PAYMENT SUCCESS
+         Shown when ?paid=true is present in the URL.
          ============================================================ -->
-    <div class="info-toggle">
-        <button type="button" onclick="toggleHotspotInfo()" id="infoToggleBtn">Show connection details</button>
-    </div>
+    <section id="successMode" class="success-wrap" style="display:none;">
+        <div class="success-card">
+            <div class="check" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"/>
+                </svg>
+            </div>
+            <h1>Payment Successful</h1>
+            <p class="sub">Your bundle is active. Tap <strong>Connect Now</strong> to start browsing.</p>
 
-    <section class="hotspot-info" id="hotspotInfo" aria-hidden="true">
-        <div class="row"><span>Client IP</span><span id="infoIp">$(ip)</span></div>
-        <div class="row"><span>MAC Address</span><span id="infoMac">$(mac)</span></div>
-        <div class="row"><span>Username</span><span id="infoUser">$(username)</span></div>
-        <div class="row"><span>Router / Hotspot</span><span id="infoHost">$(hostname)</span></div>
+            <!-- Credentials -->
+            <div class="creds">
+                <div class="cred">
+                    <div>
+                        <div class="lbl">Username</div>
+                        <div class="val" id="sUser">—</div>
+                    </div>
+                    <button class="copy-btn" type="button" onclick="copyVal('sUser')">Copy</button>
+                </div>
+                <div class="cred">
+                    <div>
+                        <div class="lbl">Password</div>
+                        <div class="val" id="sPass">—</div>
+                    </div>
+                    <button class="copy-btn" type="button" onclick="copyVal('sPass')">Copy</button>
+                </div>
+            </div>
+
+            <!-- Summary details -->
+            <div class="details">
+                <div class="drow"><span class="k">Bundle</span><span class="v" id="sBundle">—</span></div>
+                <div class="drow"><span class="k">Amount Paid</span><span class="v" id="sAmount">—</span></div>
+                <div class="drow"><span class="k">Duration</span><span class="v" id="sDuration">—</span></div>
+                <div class="drow"><span class="k">Speed</span><span class="v" id="sSpeed">—</span></div>
+                <div class="drow"><span class="k">Reference</span><span class="v" id="sReference">—</span></div>
+                <div class="drow"><span class="k">Receipt No.</span><span class="v" id="sReceipt">—</span></div>
+                <div class="drow"><span class="k">Date / Time</span><span class="v" id="sDate">—</span></div>
+            </div>
+
+            <!-- Action buttons -->
+            <div class="actions">
+                <button class="btn btn-primary" type="button" onclick="connectNow()">Connect Now</button>
+                <button class="btn btn-ghost" type="button" onclick="downloadReceipt()">Download Receipt</button>
+                <button class="btn btn-ghost" type="button" onclick="showConnectionInfo()">Connection Info</button>
+                <button class="btn btn-ghost" type="button" onclick="showManualLogin()">Manual Login</button>
+            </div>
+
+            <!-- Connection Info panel (toggle) -->
+            <div class="panel" id="connInfoPanel">
+                <h3>Connection Information
+                    <button type="button" class="close-x" onclick="hideConnectionInfo()">Close</button>
+                </h3>
+                <div class="details" style="margin-top:0;">
+                    <div class="drow"><span class="k">Account Username</span><span class="v" id="cInfoUser">—</span></div>
+                    <div class="drow"><span class="k">Bundle</span><span class="v" id="cInfoBundle">—</span></div>
+                    <div class="drow"><span class="k">Speed</span><span class="v" id="cInfoSpeed">—</span></div>
+                    <div class="drow"><span class="k">Duration</span><span class="v" id="cInfoDuration">—</span></div>
+                    <div class="drow"><span class="k">Amount Paid</span><span class="v" id="cInfoAmount">—</span></div>
+                    <div class="drow"><span class="k">IP Address</span><span class="v" id="cInfoIp">—</span></div>
+                    <div class="drow"><span class="k">MAC Address</span><span class="v" id="cInfoMac">—</span></div>
+                    <div class="drow"><span class="k">Transaction Ref.</span><span class="v" id="cInfoRef">—</span></div>
+                    <div class="drow"><span class="k">Receipt No.</span><span class="v" id="cInfoReceipt">—</span></div>
+                    <div class="drow"><span class="k">Support</span><span class="v" id="cInfoSupport">—</span></div>
+                </div>
+            </div>
+        </div>
     </section>
 
-    <!-- ============================================================
-         FOOTER
-         ============================================================ -->
+    <!-- ===== Footer (shared) ===== -->
     <footer>
-        <!-- >>>>> CHANGE SUPPORT_PHONE / support email here <<<<< -->
+        <!-- >>>>> CHANGE SUPPORT_PHONE / SUPPORT_EMAIL here <<<<< -->
         <div class="links">
             <button type="button" onclick="openTerms()">Terms &amp; Conditions</button>
-            <a href="tel:+2376XXXXXXXX">Contact Support: +237 6XX XXX XXX</a>
-            <a href="mailto:support@haylo.example">support@haylo.example</a>
+            <a href="tel:+2376XXXXXXXX" id="fSupportPhone">Contact Support: +237 6XX XXX XXX</a>
+            <a href="mailto:support@haylo.example" id="fSupportEmail">support@haylo.example</a>
         </div>
-        <div>&copy; <span id="year"></span> HAYLO INTERNET — All rights reserved.</div>
+        <div>&copy; <span id="year"></span> <span id="brandName2">HAYLO INTERNET</span> — All rights reserved.</div>
     </footer>
-
 </div>
 
-<!-- ============================================================
-     MODAL: Payment processing (loader)
-     Shown while we prepare the redirect to the payment gateway.
-     ============================================================ -->
+<!-- ===== Modals ===== -->
 <div class="modal" id="loaderModal" role="dialog" aria-modal="true" aria-labelledby="loaderTitle">
     <div class="modal-card">
         <div class="spinner" aria-hidden="true"></div>
@@ -569,43 +747,21 @@
     </div>
 </div>
 
-<!-- ============================================================
-     MODAL: Success (post-payment confirmation UI shell)
-     This is a UI-only success notice. The actual confirmation
-     will come from the backend after payment.
-     ============================================================ -->
-<div class="modal" id="successModal" role="dialog" aria-modal="true" aria-labelledby="successTitle">
-    <div class="modal-card">
-        <div class="icon-success" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-        </div>
-        <h2 id="successTitle">Payment Successful</h2>
-        <p>Your bundle is now active. Enjoy fast internet on HAYLO!</p>
-        <div class="modal-actions">
-            <button class="btn btn-primary" onclick="closeModal('successModal')">Continue</button>
-        </div>
-    </div>
-</div>
-
-<!-- ============================================================
-     MODAL: Error
-     ============================================================ -->
 <div class="modal" id="errorModal" role="dialog" aria-modal="true" aria-labelledby="errorTitle">
     <div class="modal-card">
         <div class="icon-error" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
         </div>
         <h2 id="errorTitle">Something went wrong</h2>
         <p id="errorText">We couldn't start the payment. Please try again.</p>
-        <div class="modal-actions">
+        <div class="actions">
             <button class="btn btn-ghost" onclick="closeModal('errorModal')">Close</button>
         </div>
     </div>
 </div>
 
-<!-- ============================================================
-     MODAL: Terms & Conditions
-     ============================================================ -->
 <div class="modal" id="termsModal" role="dialog" aria-modal="true" aria-labelledby="termsTitle">
     <div class="modal-card">
         <h2 id="termsTitle">Terms &amp; Conditions</h2>
@@ -617,11 +773,11 @@
             <h4>3. Payments</h4>
             <p>All bundle prices are in XAF and are non-refundable once activated. Bundles cannot be paused.</p>
             <h4>4. Privacy</h4>
-            <p>We log your device MAC address and IP for the purposes of session management and security, in accordance with applicable regulations.</p>
+            <p>We log your device MAC address and IP for session management and security, in accordance with applicable regulations.</p>
             <h4>5. Support</h4>
-            <p>For assistance, contact our support team via the email or phone listed in the footer.</p>
+            <p>For assistance, contact our support team via the phone/email in the footer.</p>
         </div>
-        <div class="modal-actions">
+        <div class="actions">
             <button class="btn btn-primary" onclick="closeModal('termsModal')">I understand</button>
         </div>
     </div>
@@ -631,43 +787,15 @@
      SCRIPTS — Vanilla JS, no frameworks, no external CDN
      ============================================================ -->
 <script>
-    /* ----------------------------------------------------------------
-       MikroTik hotspot variables.
-       RouterOS replaces these placeholders at the time the page is served
-       to the client. They are written into JS string literals below.
-       If you preview this file outside MikroTik, the literals will remain
-       as "$(...)" — that is expected.
-       ---------------------------------------------------------------- */
-    var HOTSPOT = {
-        mac:        "$(mac)",         // Client MAC address
-        ip:         "$(ip)",          // Client IP address
-        username:   "$(username)",    // Logged-in username (if any)
-        linkLogin:  "$(link-login)",  // MikroTik login URL
-        linkOrig:   "$(link-orig)",   // Original URL the client requested
-        hostname:   "$(hostname)"     // Hotspot / Router hostname
-    };
-
-    /* ----------------------------------------------------------------
-       Backend Campay checkout endpoint.
-       === SECURITY: The Campay API secret MUST live on the backend. ===
-       This page only redirects the user to YOUR backend, which then:
-         1. Creates a Campay payment request (server-side, with secret keys).
-         2. Redirects the client to the Campay payment page.
-         3. Receives Campay webhook/callback to confirm payment.
-         4. Creates a MikroTik hotspot user via MikroTik API.
-         5. Redirects the client to success.html with credentials + receipt info.
-
-       >>>>> CHANGE THIS to your backend domain in production. <<<<<
-       ---------------------------------------------------------------- */
+    /* ================================================================
+       CONFIG — change these for your deployment.
+       ================================================================ */
     var BACKEND_CHECKOUT_URL = "https://yourdomain.com/api/campay/checkout";
+    var ISP_NAME      = "HAYLO INTERNET";
+    var SUPPORT_PHONE = "+237 6XX XXX XXX";
+    var SUPPORT_EMAIL = "support@haylo.example";
 
-    /* ----------------------------------------------------------------
-       Bundle catalog — display only. Authoritative pricing must be
-       enforced server-side; the backend should re-validate price by
-       bundle_id before creating the Campay request.
-
-       >>>>> CHANGE prices / speeds / durations here as needed. <<<<<
-       ---------------------------------------------------------------- */
+    /* Bundle catalog (display only — backend re-validates by bundle_id). */
     var BUNDLES = {
         "1hour":  { name: "1 Hour Pass",  price: 100,  speed: "3Mbps",     duration: "1h"  },
         "1day":   { name: "1 Day Pass",   price: 500,  speed: "5Mbps",     duration: "24h" },
@@ -675,55 +803,131 @@
         "1month": { name: "1 Month Pass", price: 5000, speed: "Unlimited", duration: "30d" }
     };
 
-    /* ----------------------------------------------------------------
-       Helper: sanitize values that came from MikroTik. If the page is
-       opened outside RouterOS, the placeholders may still be present.
-       In that case we replace them with a friendly "N/A".
-       ---------------------------------------------------------------- */
-    function sanitize(value) {
-        if (!value) return "N/A";
-        // If the value still starts with "$(" it was not substituted by RouterOS.
-        if (value.indexOf("$(") === 0) return "N/A";
-        return value;
+    /* ================================================================
+       MikroTik hotspot variables — substituted by RouterOS at runtime.
+       Outside RouterOS the literals remain as "$(...)" and are sanitized
+       to "N/A" before being shown.
+       ================================================================ */
+    var HOTSPOT = {
+        mac:        "$(mac)",
+        ip:         "$(ip)",
+        username:   "$(username)",
+        linkLogin:  "$(link-login)",
+        linkOrig:   "$(link-orig)",
+        hostname:   "$(hostname)",
+        error:      "$(error)"
+    };
+
+    function isMtPlaceholder(v) {
+        return (!v) || (typeof v === "string" && v.indexOf("$(") === 0);
+    }
+    function sanitize(v) { return isMtPlaceholder(v) ? "N/A" : v; }
+
+    /* ================================================================
+       URL parameter parser (returns object).
+       ================================================================ */
+    function getParams() {
+        var out = {};
+        var qs = window.location.search.substring(1);
+        if (!qs) return out;
+        qs.split("&").forEach(function (pair) {
+            if (!pair) return;
+            var kv = pair.split("=");
+            out[decodeURIComponent(kv[0] || "")] = decodeURIComponent((kv[1] || "").replace(/\+/g, " "));
+        });
+        return out;
+    }
+    var P = getParams();
+
+    /* ================================================================
+       Helpers
+       ================================================================ */
+    function $(id) { return document.getElementById(id); }
+    function setText(id, val) {
+        var el = $(id); if (!el) return;
+        el.textContent = (val == null || val === "") ? "—" : val;
+    }
+    function showToast(msg, type) {
+        var wrap = $("toastWrap");
+        var t = document.createElement("div");
+        t.className = "toast " + (type || "");
+        t.textContent = msg;
+        wrap.appendChild(t);
+        setTimeout(function () {
+            t.style.transition = "opacity .25s ease, transform .25s ease";
+            t.style.opacity = "0";
+            t.style.transform = "translateY(-6px)";
+            setTimeout(function () { wrap.removeChild(t); }, 260);
+        }, 2400);
+    }
+    function copyVal(id) {
+        var v = $(id).textContent;
+        if (!v || v === "—") return;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(v).then(function () { showToast("Copied!", "success"); });
+        } else {
+            var ta = document.createElement("textarea");
+            ta.value = v; document.body.appendChild(ta); ta.select();
+            try { document.execCommand("copy"); showToast("Copied!", "success"); } catch (_) {}
+            document.body.removeChild(ta);
+        }
+    }
+    function togglePass(inputId, btn) {
+        var el = $(inputId);
+        if (el.type === "password") { el.type = "text"; btn.textContent = "Hide"; }
+        else { el.type = "password"; btn.textContent = "Show"; }
+    }
+    function nowStr() {
+        function pad(n){ return n < 10 ? "0"+n : ""+n; }
+        var d = new Date();
+        return d.getFullYear() + "-" + pad(d.getMonth()+1) + "-" + pad(d.getDate())
+             + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
     }
 
-    /* ----------------------------------------------------------------
-       selectBundle(bundleId)
-       Called when a user clicks "Buy Now" on a bundle card.
-       Validates the bundle, shows loader, then triggers redirect.
-       ---------------------------------------------------------------- */
+    /* Generic modal controls */
+    function openModal(id)  { var el = $(id); if (el) el.classList.add("open"); }
+    function closeModal(id) { var el = $(id); if (el) el.classList.remove("open"); }
+    function showLoader(title, subtitle) {
+        if (title)    $("loaderTitle").textContent = title;
+        if (subtitle) $("loaderText").textContent  = subtitle;
+        openModal("loaderModal");
+    }
+    function hideLoader() { closeModal("loaderModal"); }
+    function showError(msg) {
+        if (msg) $("errorText").textContent = msg;
+        openModal("errorModal");
+    }
+    function openTerms() { openModal("termsModal"); }
+
+    /* ================================================================
+       Mode switching
+       ================================================================ */
+    function showBundleSelection() {
+        $("bundleMode").style.display = "";
+        $("successMode").style.display = "none";
+    }
+    function showSuccessPanel() {
+        $("bundleMode").style.display = "none";
+        $("successMode").style.display = "";
+        populateSuccess();
+    }
+
+    /* ================================================================
+       BUNDLE FLOW
+       ================================================================ */
     function selectBundle(bundleId) {
         var bundle = BUNDLES[bundleId];
-        if (!bundle) {
-            showToast("Invalid bundle selected.", "error");
-            return;
-        }
+        if (!bundle) { showToast("Invalid bundle selected.", "error"); return; }
         showLoader("Preparing your payment…",
                    "Selected: " + bundle.name + " — " + bundle.price + " XAF");
-
-        // Small artificial delay so users see the loader; remove if undesired.
-        setTimeout(function () {
-            redirectToPayment(bundleId);
-        }, 700);
+        setTimeout(function () { redirectToPayment(bundleId); }, 600);
     }
 
-    /* ----------------------------------------------------------------
-       redirectToPayment(bundleId)
-       Builds the Campay backend-checkout URL with the selected bundle
-       data AND the MikroTik hotspot variables, then redirects.
-
-       === BACKEND-INTEGRATION-POINT ===
-       The backend (https://yourdomain.com/api/campay/checkout) is
-       responsible for creating the Campay payment request using its
-       SECRET API keys (never expose them here).
-       ---------------------------------------------------------------- */
+    /* Builds backend Campay checkout URL and redirects.
+       === BACKEND-INTEGRATION-POINT === — backend creates Campay request. */
     function redirectToPayment(bundleId) {
         var bundle = BUNDLES[bundleId];
-        if (!bundle) {
-            hideLoader();
-            showError("Invalid bundle selected.");
-            return;
-        }
+        if (!bundle) { hideLoader(); showError("Invalid bundle selected."); return; }
         try {
             var params = [
                 "bundle_id="   + encodeURIComponent(bundleId),
@@ -736,96 +940,217 @@
                 "link_login="  + encodeURIComponent(HOTSPOT.linkLogin),
                 "link_orig="   + encodeURIComponent(HOTSPOT.linkOrig)
             ].join("&");
-
-            var fullUrl = BACKEND_CHECKOUT_URL + "?" + params;
-
-            // Backend will create the Campay request and redirect to the
-            // Campay payment page. After payment confirmation (webhook),
-            // backend creates the MikroTik user and redirects to success.html.
-            window.location.href = fullUrl;
+            window.location.href = BACKEND_CHECKOUT_URL + "?" + params;
         } catch (err) {
             hideLoader();
             showError("We couldn't redirect you to payment. Please try again.");
         }
     }
 
-    /* ----------------------------------------------------------------
-       Loader controls
-       ---------------------------------------------------------------- */
-    function showLoader(title, subtitle) {
-        if (title)    document.getElementById("loaderTitle").textContent = title;
-        if (subtitle) document.getElementById("loaderText").textContent  = subtitle;
-        openModal("loaderModal");
+    /* ================================================================
+       SUCCESS MODE — populate UI from URL parameters.
+       Backend redirects here with paid=true&username=...&password=...
+       ================================================================ */
+    function populateSuccess() {
+        var bundleName = P.bundle_name || P.bundle || "—";
+        var dateStr    = P.date || nowStr();
+
+        setText("sUser",      P.username);
+        setText("sPass",      P.password);
+        setText("sBundle",    bundleName);
+        setText("sAmount",    P.amount ? (P.amount + " XAF") : "—");
+        setText("sDuration",  P.duration);
+        setText("sSpeed",     P.speed);
+        setText("sReference", P.reference);
+        setText("sReceipt",   P.receipt);
+        setText("sDate",      dateStr);
+
+        // Connection info panel mirrors the same data + support details
+        setText("cInfoUser",     P.username);
+        setText("cInfoBundle",   bundleName);
+        setText("cInfoSpeed",    P.speed);
+        setText("cInfoDuration", P.duration);
+        setText("cInfoAmount",   P.amount ? (P.amount + " XAF") : "—");
+        setText("cInfoIp",       P.ip || sanitize(HOTSPOT.ip));
+        setText("cInfoMac",      P.mac || sanitize(HOTSPOT.mac));
+        setText("cInfoRef",      P.reference);
+        setText("cInfoReceipt",  P.receipt);
+        setText("cInfoSupport",  SUPPORT_PHONE + " · " + SUPPORT_EMAIL);
     }
-    function hideLoader() { closeModal("loaderModal"); }
 
-    /* ----------------------------------------------------------------
-       Generic modal controls
-       ---------------------------------------------------------------- */
-    function openModal(id)  { var el = document.getElementById(id); if (el) el.classList.add("open"); }
-    function closeModal(id) { var el = document.getElementById(id); if (el) el.classList.remove("open"); }
-
-    function showSuccess(msg) {
-        if (msg) {
-            var p = document.querySelector("#successModal p");
-            if (p) p.textContent = msg;
+    /* ================================================================
+       connectNow()
+       Reads username/password from URL → injects into hidden MikroTik
+       login form → submits → MikroTik grants internet access.
+       ================================================================ */
+    function connectNow() {
+        var u = P.username, p = P.password;
+        if (!u || !p) {
+            showToast("Missing credentials. Please use Manual Login.", "error");
+            showManualLogin();
+            return;
         }
-        openModal("successModal");
-    }
-    function showError(msg) {
-        if (msg) document.getElementById("errorText").textContent = msg;
-        openModal("errorModal");
-    }
-    function openTerms() { openModal("termsModal"); }
-
-    /* ----------------------------------------------------------------
-       Toast notifications (auto-dismiss)
-       ---------------------------------------------------------------- */
-    function showToast(message, type) {
-        var wrap = document.getElementById("toastWrap");
-        var t = document.createElement("div");
-        t.className = "toast " + (type || "");
-        t.textContent = message;
-        wrap.appendChild(t);
-        setTimeout(function () {
-            t.style.transition = "opacity .25s ease, transform .25s ease";
-            t.style.opacity = "0";
-            t.style.transform = "translateY(-6px)";
-            setTimeout(function () { wrap.removeChild(t); }, 260);
-        }, 3200);
+        $("autoUsername").value = u;
+        $("autoPassword").value = p;
+        showLoader("Connecting you to the internet…", "Authenticating with the hotspot.");
+        try {
+            // Submits to $(link-login-only) — MikroTik will respond with success/redirect.
+            $("autoLoginForm").submit();
+        } catch (err) {
+            hideLoader();
+            showError("Auto-login failed. Please try Manual Login.");
+        }
     }
 
-    /* ----------------------------------------------------------------
-       Hotspot info panel toggle
-       ---------------------------------------------------------------- */
+    /* ================================================================
+       Panels: Manual Login + Connection Info
+       ================================================================ */
+    function showManualLogin() {
+        var panel = $("manualLoginPanel");
+        panel.classList.add("open");
+        // Prefill if we have credentials from a successful payment
+        if (P.username && !$("mUser").value) $("mUser").value = P.username;
+        if (P.password && !$("mPass").value) $("mPass").value = P.password;
+        panel.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    function hideManualLogin() { $("manualLoginPanel").classList.remove("open"); }
+
+    function manualLoginBeforeSubmit() {
+        var u = $("mUser").value.trim(), p = $("mPass").value;
+        if (!u || !p) { showToast("Enter username and password.", "error"); return false; }
+        return true; // Let MikroTik handle the POST to $(link-login-only).
+    }
+
+    function showConnectionInfo() {
+        var panel = $("connInfoPanel");
+        panel.classList.add("open");
+        panel.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    function hideConnectionInfo() { $("connInfoPanel").classList.remove("open"); }
+
+    /* ================================================================
+       Hotspot info panel (bundle mode)
+       ================================================================ */
     function toggleHotspotInfo() {
-        var panel = document.getElementById("hotspotInfo");
-        var btn   = document.getElementById("infoToggleBtn");
+        var panel = $("hotspotInfo");
+        var btn   = $("infoToggleBtn");
         var open  = panel.classList.toggle("open");
         panel.setAttribute("aria-hidden", open ? "false" : "true");
         btn.textContent = open ? "Hide connection details" : "Show connection details";
     }
 
-    /* ----------------------------------------------------------------
-       On load: populate hotspot info (sanitized) and current year.
-       ---------------------------------------------------------------- */
-    document.addEventListener("DOMContentLoaded", function () {
-        document.getElementById("infoIp").textContent   = sanitize(HOTSPOT.ip);
-        document.getElementById("infoMac").textContent  = sanitize(HOTSPOT.mac);
-        document.getElementById("infoUser").textContent = sanitize(HOTSPOT.username);
-        document.getElementById("infoHost").textContent = sanitize(HOTSPOT.hostname);
-        document.getElementById("year").textContent     = new Date().getFullYear();
+    /* ================================================================
+       Receipt — generated client-side from URL params.
+       Opens a printable window AND offers download as standalone HTML.
+       ================================================================ */
+    function buildReceiptHTML() {
+        var esc = function (s) {
+            return String(s == null ? "" : s)
+                .replace(/&/g,"&amp;").replace(/</g,"&lt;")
+                .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+        };
+        var bundleName = P.bundle_name || P.bundle || "—";
+        var dateStr    = P.date || nowStr();
+        var rows = [
+            ["Receipt No.",         P.receipt],
+            ["Transaction Ref.",    P.reference],
+            ["Date / Time",         dateStr],
+            ["Client IP",           P.ip || sanitize(HOTSPOT.ip)],
+            ["Client MAC",          P.mac || sanitize(HOTSPOT.mac)],
+            ["Bundle",              bundleName],
+            ["Duration",            P.duration],
+            ["Speed",               P.speed],
+            ["Amount Paid",         (P.amount ? P.amount + " XAF" : "")],
+            ["Username",            P.username],
+            ["Password",            P.password]
+        ];
+        var rowHtml = rows.map(function (r) {
+            return '<tr><td class="k">' + esc(r[0]) + '</td><td class="v">' + esc(r[1] || "—") + '</td></tr>';
+        }).join("");
 
-        // Close modals when clicking the dim background (but not the inner card)
+        return '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Receipt — ' + esc(ISP_NAME) + '</title>'
+            + '<style>'
+            + 'body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:0;padding:24px;background:#fff;}'
+            + '.box{max-width:520px;margin:0 auto;border:1px solid #ddd;border-radius:10px;padding:22px;}'
+            + '.brand{font-size:22px;font-weight:800;letter-spacing:.5px;margin-bottom:2px;}'
+            + '.sub{color:#666;font-size:12px;margin-bottom:14px;}'
+            + 'table{width:100%;border-collapse:collapse;font-size:13px;}'
+            + 'td{padding:8px 6px;border-bottom:1px dashed #e5e5e5;vertical-align:top;}'
+            + 'td.k{color:#666;width:42%;}'
+            + 'td.v{color:#111;font-weight:600;word-break:break-all;text-align:right;}'
+            + '.footer{margin-top:14px;padding-top:10px;border-top:1px solid #eee;font-size:11px;color:#666;text-align:center;}'
+            + '@media print{ body{padding:0;} .box{border:none;} .noprint{display:none;} }'
+            + '.btn{display:inline-block;margin-top:14px;padding:10px 14px;background:#111;color:#fff;border-radius:8px;'
+            + 'border:none;cursor:pointer;font-size:13px;}'
+            + '</style></head><body>'
+            + '<div class="box">'
+            + '<div class="brand">' + esc(ISP_NAME) + '</div>'
+            + '<div class="sub">Internet Access Receipt</div>'
+            + '<table>' + rowHtml + '</table>'
+            + '<div class="footer">Support: ' + esc(SUPPORT_PHONE) + ' · ' + esc(SUPPORT_EMAIL) + '<br>'
+            + 'Thank you for choosing ' + esc(ISP_NAME) + '.</div>'
+            + '<button class="btn noprint" onclick="window.print()">Print Receipt</button>'
+            + '</div></body></html>';
+    }
+
+    function downloadReceipt() {
+        var html = buildReceiptHTML();
+        // First try to open a printable window. If pop-ups are blocked, fall back to download.
+        var w = window.open("", "_blank", "width=600,height=800");
+        if (w) {
+            w.document.open(); w.document.write(html); w.document.close();
+            setTimeout(function () { try { w.focus(); w.print(); } catch (_) {} }, 350);
+            return;
+        }
+        // Fallback: download as HTML file
+        try {
+            var blob = new Blob([html], { type: "text/html;charset=utf-8" });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement("a");
+            a.href = url;
+            a.download = "receipt-" + (P.receipt || P.reference || Date.now()) + ".html";
+            document.body.appendChild(a); a.click();
+            setTimeout(function () {
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }, 100);
+        } catch (_) {
+            showToast("Couldn't generate receipt.", "error");
+        }
+    }
+
+    /* ================================================================
+       Init
+       ================================================================ */
+    document.addEventListener("DOMContentLoaded", function () {
+        // Branding
+        $("brandName").textContent  = ISP_NAME;
+        $("brandName2").textContent = ISP_NAME;
+        $("fSupportPhone").textContent = "Contact Support: " + SUPPORT_PHONE;
+        $("fSupportPhone").href = "tel:" + SUPPORT_PHONE.replace(/\s+/g, "");
+        $("fSupportEmail").textContent = SUPPORT_EMAIL;
+        $("fSupportEmail").href = "mailto:" + SUPPORT_EMAIL;
+        $("year").textContent = new Date().getFullYear();
+
+        // Hotspot info (sanitized for previews outside RouterOS)
+        $("infoIp").textContent   = sanitize(HOTSPOT.ip);
+        $("infoMac").textContent  = sanitize(HOTSPOT.mac);
+        $("infoUser").textContent = sanitize(HOTSPOT.username);
+        $("infoHost").textContent = sanitize(HOTSPOT.hostname);
+
+        // Show $(error) from MikroTik if present
+        if (!isMtPlaceholder(HOTSPOT.error) && HOTSPOT.error.trim() !== "") {
+            $("mtErrorText").textContent = HOTSPOT.error;
+            $("mtError").classList.add("show");
+        }
+
+        // Backdrop click closes non-loader modals
         document.querySelectorAll(".modal").forEach(function (m) {
             m.addEventListener("click", function (e) {
-                if (e.target === m && m.id !== "loaderModal") {
-                    m.classList.remove("open");
-                }
+                if (e.target === m && m.id !== "loaderModal") m.classList.remove("open");
             });
         });
-
-        // ESC key closes non-loader modals
+        // ESC closes non-loader modals
         document.addEventListener("keydown", function (e) {
             if (e.key === "Escape") {
                 document.querySelectorAll(".modal.open").forEach(function (m) {
@@ -833,29 +1158,16 @@
                 });
             }
         });
-    });
 
-    /* ----------------------------------------------------------------
-       OPTIONAL: If the backend redirects the user back to this page
-       after payment with a query string like ?status=success or
-       ?status=error&msg=..., we surface that state here.
-       ---------------------------------------------------------------- */
-    (function handleReturnFromPayment() {
-        try {
-            var qs = window.location.search;
-            if (!qs) return;
-            var params = {};
-            qs.substring(1).split("&").forEach(function (pair) {
-                var kv = pair.split("=");
-                params[decodeURIComponent(kv[0] || "")] = decodeURIComponent(kv[1] || "");
-            });
-            if (params.status === "success") {
-                showSuccess("Your bundle has been activated. Enjoy HAYLO INTERNET!");
-            } else if (params.status === "error") {
-                showError(params.msg || "Payment failed. Please try again.");
-            }
-        } catch (_) { /* ignore */ }
-    })();
+        // Mode selection
+        if (P.paid === "true" && P.username && P.password) {
+            showSuccessPanel();
+        } else {
+            showBundleSelection();
+            // Surface payment errors if backend returned status=error
+            if (P.status === "error") showError(P.msg || "Payment failed. Please try again.");
+        }
+    });
 </script>
 </body>
 </html>
