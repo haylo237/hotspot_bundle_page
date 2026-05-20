@@ -70,6 +70,22 @@ async function profileExists(name) {
     return profiles.indexOf(name) !== -1;
 }
 
+/* ---------- low-level connectivity test (for diagnostics) ---------- */
+
+async function tryConnect() {
+    const host = process.env.MIKROTIK_HOST || "192.168.88.1";
+    const port = parseInt(process.env.MIKROTIK_PORT || "8728", 10);
+    const api = buildClient();
+    try {
+        await api.connect();
+        return { ok: true, host, port };
+    } catch (err) {
+        return { ok: false, host, port, error: (err && err.message) || String(err) };
+    } finally {
+        try { api.close(); } catch (_) { /* ignore */ }
+    }
+}
+
 /* ---------- user creation ---------- */
 
 async function createHotspotUser({ username, password, profile, comment }) {
@@ -98,5 +114,6 @@ module.exports = {
     generatePassword,
     getHotspotProfiles,
     profileExists,
-    createHotspotUser
+    createHotspotUser,
+    tryConnect
 };

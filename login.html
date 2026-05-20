@@ -670,7 +670,7 @@
     /* ================================================================
        CONFIG — change for your deployment.
        ================================================================ */
-    var BACKEND_BASE_URL = "https://yourdomain.com";   // No trailing slash
+    var BACKEND_BASE_URL = "http://10.5.50.2:3000";    // Local mini-server on the hotspot LAN (no trailing slash)
     var ISP_NAME         = "HAYLO INTERNET";
     var SUPPORT_PHONE    = "+237 6XX XXX XXX";
     var SUPPORT_EMAIL    = "support@haylo.example";
@@ -788,7 +788,8 @@
             .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
             .then(function (res) {
                 if (!res.ok || !res.data || res.data.status !== "success" || !Array.isArray(res.data.offers)) {
-                    renderOffersError("Could not load bundles. Please try again.");
+                    var msg = (res.data && res.data.message) || "Could not load bundles. Please try again.";
+                    renderOffersError(msg);
                     return;
                 }
                 OFFERS = res.data.offers;

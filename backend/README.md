@@ -1,7 +1,20 @@
 # HAYLO INTERNET — MikroTik Hotspot + CamPay Backend
 
 A small Node.js/Express backend that turns a MikroTik captive portal into a
-self-service WiFi shop.
+self-service WiFi shop. **It runs on a mini-server inside the same LAN as
+the MikroTik router** — it only needs the public internet to reach CamPay.
+
+```
+Client (10.5.50.x)
+   │  HTTP
+   ▼
+MikroTik Hotspot (10.5.50.1) — serves login.html
+   │  HTTP (walled-garden)
+   ▼
+Mini-server (10.5.50.2:3000) — this backend
+   ├──► MikroTik RouterOS API  (LAN, 10.5.50.1:8728)
+   └──► CamPay REST API        (internet, HTTPS)
+```
 
 1. Customer connects to your WiFi → MikroTik serves `login.html`.
 2. The portal asks the backend `GET /api/hotspot/offers` for the live bundle
@@ -11,18 +24,6 @@ self-service WiFi shop.
 5. Backend polls CamPay; on success it provisions a hotspot user on the
    **MikroTik** router via the RouterOS API and returns the credentials.
 6. The portal auto-logs the user in (hidden form POSTed to `$(link-login-only)`).
-
-```
-┌───────────┐  HTTP   ┌────────────┐  RouterOS API   ┌───────────┐
-│ login.html│────────▶│  backend   │────────────────▶│ MikroTik  │
-│ (on RB)   │◀────────│ (Node.js)  │                 │ Hotspot   │
-└───────────┘         └─────┬──────┘                 └───────────┘
-                            │ HTTPS
-                            ▼
-                       ┌──────────┐
-                       │  CamPay  │
-                       └──────────┘
-```
 
 > **The CamPay token never touches the browser.** It lives only in the
 > backend `.env`. The frontend talks exclusively to your backend.
@@ -45,7 +46,8 @@ hotspot_bundle_page/
     │   ├── mikrotikService.js # RouterOS API wrapper
     │   └── receiptService.js  # Receipt number generator
     └── routes/
-        └── hotspot.js         # /api/hotspot/* endpoints
+        ├── hotspot.js         # /api/hotspot/* endpoints
+        └── diagnostics.js     # /api/diagnostics/* endpoints
 ```
 
 ---
@@ -65,17 +67,19 @@ cp .env.example .env
 
 | Variable             | Example                       | Notes                                                                 |
 |----------------------|-------------------------------|-----------------------------------------------------------------------|
-| `PORT`               | `5050`                        | HTTP port the backend listens on                                       |
-| `BASE_URL`           | `https://api.haylo.example`   | Public URL where this backend is reachable                             |
+| `PORT`               | `3000`                        | HTTP port the backend listens on. Always binds to `0.0.0.0`.           |
+| `BASE_URL`           | `http://10.5.50.2:3000`       | LAN URL where this backend is reachable from the hotspot              |
+| `CORS_EXTRA_ORIGINS` | *(empty)*                     | Comma-separated extra origins to allow (defaults already cover MT)     |
 | `CAMPAY_BASE_URL`    | `https://demo.campay.net`     | Use `https://www.campay.net` for production                            |
 | `CAMPAY_TOKEN`       | *(secret)*                    | Permanent token from your CamPay dashboard                             |
 | `CAMPAY_CURRENCY`    | `XAF`                         |                                                                       |
-| `MIKROTIK_HOST`      | `192.168.88.1`                | Router LAN IP reachable from the backend                               |
+| `MIKROTIK_HOST`      | `10.5.50.1`                   | Router LAN IP — backend reaches it over the LAN, never the internet   |
 | `MIKROTIK_USER`      | `hotspot-api`                 | Dedicated API user (see hardening below)                               |
 | `MIKROTIK_PASSWORD`  | *(secret)*                    |                                                                       |
 | `MIKROTIK_PORT`      | `8728`                        | `8729` for API-SSL                                                     |
 | `HOTSPOT_LOGIN_URL`  | `http://10.5.50.1/login`      | The hotspot login URL (used by the optional redirect helper)           |
 | `OFFERS_STRICT`      | `false`                       | If `true`, `/offers` returns nothing when the router is unreachable    |
+| `NODE_ENV`           | `development`                 | When not `production`, `/offers` includes a debug hint on no-match     |
 | `ISP_NAME`           | `HAYLO INTERNET`              | Used in CamPay description / receipts                                  |
 | `SUPPORT_PHONE`      | `+237 6XX XXX XXX`            |                                                                       |
 | `SUPPORT_EMAIL`      | `support@haylo.example`       |                                                                       |
@@ -89,11 +93,18 @@ npm start            # production
 npm run dev          # auto-restart on file change (Node 18+)
 ```
 
+On startup the backend prints:
+- listening address (`http://0.0.0.0:<PORT>`)
+- `BASE_URL`, CamPay base, MikroTik host:port, allowed CORS origins
+- loaded offers (id, profile, price)
+- result of an initial MikroTik connection test (profiles found, matching offers, missing profiles)
+
 Sanity check:
 
 ```bash
-curl http://localhost:5050/health
-curl http://localhost:5050/api/hotspot/offers
+curl http://10.5.50.2:3000/health
+curl http://10.5.50.2:3000/api/hotspot/offers
+curl http://10.5.50.2:3000/api/diagnostics/mikrotik
 ```
 
 ---
@@ -132,15 +143,32 @@ Enable RouterOS API:
 /ip service set api-ssl disabled=no port=8729   # for TLS
 ```
 
-### 4.3 Walled garden (let unpaid users reach the portal + CamPay)
+### 4.3 Walled garden (let unpaid users reach the mini-server + CamPay)
+
+The hotspot blocks all traffic from unauthenticated clients except the IPs
+and hosts you whitelist here. Clients need to reach **the local backend** and
+the **CamPay** servers before they have paid:
 
 ```routeros
+# Local backend on the mini-server (LAN, by IP+port)
+/ip hotspot walled-garden ip
+add dst-address=10.5.50.2 protocol=tcp dst-port=3000 comment="Allow local backend"
+
+# CamPay (internet, by hostname)
 /ip hotspot walled-garden
-add dst-host=api.haylo.example      comment="HAYLO backend"
-add dst-host=demo.campay.net        comment="CamPay demo"
-add dst-host=www.campay.net         comment="CamPay prod"
-add dst-host=*.mtn.cm               comment="MTN MoMo confirm pages"
-add dst-host=*.orange.cm            comment="Orange Money confirm pages"
+add dst-host=demo.campay.net   comment="CamPay demo"
+add dst-host=campay.net        comment="CamPay"
+add dst-host=*.campay.net      comment="CamPay subdomains"
+add dst-host=*.mtn.cm          comment="MTN MoMo confirm pages"
+add dst-host=*.orange.cm       comment="Orange Money confirm pages"
+```
+
+If your captive portal uses DNS-based redirects, also allow DNS:
+
+```routeros
+/ip hotspot walled-garden ip
+add dst-port=53 protocol=udp comment="DNS"
+add dst-port=53 protocol=tcp comment="DNS"
 ```
 
 ### 4.4 Upload the portal
@@ -152,7 +180,7 @@ files from that folder.
 Before uploading, edit the top of the `<script>` block in `login.html`:
 
 ```js
-var BACKEND_BASE_URL = "https://api.haylo.example";   // ← your public backend
+var BACKEND_BASE_URL = "http://10.5.50.2:3000";   // ← local mini-server on the LAN
 var ISP_NAME         = "HAYLO INTERNET";
 var SUPPORT_PHONE    = "+237 6XX XXX XXX";
 var SUPPORT_EMAIL    = "support@haylo.example";
@@ -261,6 +289,30 @@ Frontend polls this every ~4 s. Possible responses:
 Optional. Redirects to `HOTSPOT_LOGIN_URL` with credentials in the query
 string so the portal can show the success view directly.
 
+### `GET /api/diagnostics/mikrotik`
+
+Returns whether the backend can reach the MikroTik API, the list of
+profiles found, which offers match, and which profiles are missing. Use
+this from the mini-server itself or from a client browser when offers do
+not appear in the portal.
+
+```json
+{
+  "status": "success",
+  "message": "MikroTik reachable and 4 offer(s) match router profiles.",
+  "mikrotik": { "host": "10.5.50.1", "port": 8728, "connected": true, "api_login": "ok" },
+  "offers_file":             [{ "id": "1hour", "profile": "1hour" }],
+  "mikrotik_profiles_found": ["default", "1hour", "1day", "1week", "1month"],
+  "expected_profiles":       ["1hour", "1day", "1week", "1month"],
+  "matching_offers":         [{ "id": "1hour", "profile": "1hour", "price": 100 }],
+  "missing_profiles":        [],
+  "extra_router_profiles":   ["default"]
+}
+```
+
+If the router is unreachable, it returns `503` with the connection error
+and a list of hints. Passwords and tokens are **never** included.
+
 ---
 
 ## 7. End-to-end test (demo)
@@ -272,7 +324,7 @@ string so the portal can show the success view directly.
    is not `true`).
 4. `npm start`
 5. Open `login.html` in a browser with `BACKEND_BASE_URL` pointing at your
-   local backend (e.g. `http://localhost:5050`).
+   local backend (e.g. `http://10.5.50.2:3000`).
 6. Pick a bundle → enter a CamPay demo number → confirm.
 7. Watch backend logs:
    - `POST /api/hotspot/pay` → CamPay collect
@@ -281,7 +333,46 @@ string so the portal can show the success view directly.
 
 ---
 
-## 8. Switch demo → production
+## 8. Local mini-server deployment (recommended)
+
+Run the backend on a small machine (Raspberry Pi, mini-PC, NUC) plugged into
+the same LAN as the MikroTik. The backend uses the LAN to reach the router
+and the internet (through the router) to reach CamPay. **Nothing has to be
+exposed to the public internet.**
+
+1. **Give the mini-server a static IP** (e.g. `10.5.50.2`) on the hotspot LAN.
+2. **Set the backend URL in `login.html`:**
+   ```js
+   var BACKEND_BASE_URL = "http://10.5.50.2:3000";
+   ```
+3. **Set the MikroTik host in `.env`:**
+   ```env
+   MIKROTIK_HOST=10.5.50.1
+   MIKROTIK_PORT=8728
+   MIKROTIK_USER=hotspot-api
+   MIKROTIK_PASSWORD=StrongPassword123
+   ```
+4. **Enable the MikroTik API:**
+   ```routeros
+   /ip service enable api
+   /ip service set api port=8728
+   ```
+5. **Create a dedicated API user on the MikroTik:**
+   ```routeros
+   /user group add name=hotspot-api-group policy=read,write,api
+   /user add name=hotspot-api password=StrongPassword123 group=hotspot-api-group
+   ```
+6. **Add walled-garden rules** so unauthenticated clients can reach the
+   backend and CamPay (see §4.3 above).
+7. **Allow port 3000 on the mini-server's firewall** so clients on
+   `10.5.50.0/24` can reach it (e.g. `sudo ufw allow from 10.5.50.0/24 to any port 3000`).
+8. **Start the backend** (`npm start`). It binds to `0.0.0.0:3000`.
+9. **Test from a client browser** before relying on the captive portal:
+   - `http://10.5.50.2:3000/health` → should return `{ "ok": true, … }`
+   - `http://10.5.50.2:3000/api/hotspot/offers` → should list your bundles
+   - `http://10.5.50.2:3000/api/diagnostics/mikrotik` → should report `connected: true`
+
+### Switch demo → production CamPay
 
 1. Get a production token from CamPay.
 2. Update `.env`:
@@ -295,16 +386,33 @@ string so the portal can show the success view directly.
 
 ## 9. Troubleshooting
 
+First, run the diagnostic endpoint:
+
+```bash
+curl http://10.5.50.2:3000/api/diagnostics/mikrotik | jq
+```
+
 | Symptom | Likely cause |
 |--------|--------------|
-| Portal stuck on skeleton bundles | `BACKEND_BASE_URL` wrong in `login.html` / backend not running / not whitelisted in walled-garden |
-| `Bundles unavailable` in portal   | MikroTik unreachable AND `OFFERS_STRICT=true` |
-| `ER101 Invalid phone number`      | Phone not in `237XXXXXXXXX` form |
-| `ER102 Unsupported carrier`       | CamPay `holder_info` returned a non-MTN/Orange carrier |
-| `ER301 Insufficient balance`      | Customer's MoMo wallet doesn't have enough |
-| `ER999` after a successful pay    | RouterOS API failed — check `MIKROTIK_*` creds, port, and that the API service is enabled |
-| Polling times out (180s)          | Customer never confirmed the USSD prompt — they can retry |
-| `EADDRINUSE: ::3000`              | Port busy. Change `PORT` in `.env` (e.g. `5050`) |
+| Portal stuck on skeleton bundles                | `BACKEND_BASE_URL` wrong in `login.html`, backend not running, or walled-garden missing the `10.5.50.2 tcp 3000` rule |
+| `Could not reach the server`                    | Mini-server firewall blocks port 3000, or backend not bound to `0.0.0.0` |
+| `No matching MikroTik hotspot profiles found`   | Profile names in `data/offers.js` don't match what's on the router. Check the `mikrotik_profiles_found` field in the response |
+| Diagnostics: `Cannot reach MikroTik API`        | `MIKROTIK_HOST` wrong, API service disabled (`/ip service`), or wrong credentials |
+| `ER101 Invalid phone number`                    | Phone not in `237XXXXXXXXX` form |
+| `ER102 Unsupported carrier`                     | CamPay `holder_info` returned a non-MTN/Orange carrier |
+| `ER301 Insufficient balance`                    | Customer's MoMo wallet doesn't have enough |
+| `ER999` after a successful pay                  | Payment OK but RouterOS user creation failed — check `MIKROTIK_*` creds and API service |
+| Polling times out (180s)                        | Customer never confirmed the USSD prompt |
+| `EADDRINUSE: ::3000`                            | Port busy. Change `PORT` in `.env` (e.g. `5050`) |
+
+### If offers don't show, check in order:
+1. Backend server is running (`curl http://10.5.50.2:3000/health`)
+2. Backend binds to `0.0.0.0` (look for `listening on: http://0.0.0.0:3000` in the startup banner)
+3. Firewall on the mini-server allows port 3000 from the hotspot subnet
+4. MikroTik API is enabled (`/ip service print`)
+5. MikroTik credentials in `.env` work (run the diagnostic endpoint)
+6. Profile names in `data/offers.js` match exactly with MikroTik hotspot profiles
+7. Walled-garden rule allows clients to reach `10.5.50.2:3000`
 
 ---
 
@@ -312,9 +420,9 @@ string so the portal can show the success view directly.
 
 - [ ] `.env` is in `.gitignore` and **never** committed.
 - [ ] CamPay token is in `.env` only — not in `login.html`.
-- [ ] Backend served over **HTTPS** (Let's Encrypt + nginx/Caddy).
+- [ ] Backend runs on a LAN-only mini-server — port 3000 is not exposed to the public internet.
 - [ ] Dedicated RouterOS user with restricted policy.
-- [ ] Walled garden allows only your backend + CamPay hostnames.
+- [ ] Walled garden allows only the local backend IP+port and CamPay hostnames.
 - [ ] Backend re-validates `bundle_id`, `phone`, profile existence,
       and uses the server-side price.
 - [ ] Replace the in-memory `store` Map with a real DB before scaling.

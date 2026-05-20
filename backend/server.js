@@ -6,6 +6,9 @@
  *   npm install
  *   cp .env.example .env   # then edit values
  *   npm start
+ *
+ * Topology:
+ *   Client ── MikroTik (10.5.50.1) ── Mini-server (10.5.50.2:3000) ── CamPay
  * ---------------------------------------------------------------------------
  */
 
@@ -14,19 +17,56 @@ require("dotenv").config();
 const express = require("express");
 const cors    = require("cors");
 
-const hotspotRoutes = require("./routes/hotspot");
+const hotspotRoutes     = require("./routes/hotspot");
+const diagnosticsRoutes = require("./routes/diagnostics");
+const OFFERS            = require("./data/offers");
+const mikrotik          = require("./services/mikrotikService");
 
 const app  = express();
 const PORT = parseInt(process.env.PORT || "3000", 10);
+const HOST = "0.0.0.0";  // bind all interfaces — hotspot clients reach us via LAN
 
-/* ---------- middleware ---------- */
-app.use(cors());                          // captive portal is on a different origin
+/* ---------------------------------------------------------------------------
+ * CORS
+ * The captive portal HTML is served by MikroTik (origin http://10.5.50.1) and
+ * may also be opened as a `file://` URL (origin "null"). Allow:
+ *   - http://10.5.50.1            (MikroTik captive portal)
+ *   - http://<BASE_URL host>      (the mini-server itself)
+ *   - "null"                      (file:// origin some captive portals use)
+ *   - anything in CORS_EXTRA_ORIGINS (comma-separated)
+ * ------------------------------------------------------------------------- */
+const defaultAllowed = [
+    "http://10.5.50.1",
+    "http://10.5.50.1:80",
+    "http://10.5.50.2:" + PORT,
+    "null"
+];
+if (process.env.BASE_URL) defaultAllowed.push(process.env.BASE_URL.replace(/\/$/, ""));
+const extraOrigins = (process.env.CORS_EXTRA_ORIGINS || "")
+    .split(",").map(s => s.trim()).filter(Boolean);
+const ALLOWED_ORIGINS = new Set(defaultAllowed.concat(extraOrigins));
+
+app.use(cors({
+    origin: function (origin, cb) {
+        // No Origin header (curl, same-origin, captive-portal probes) → allow
+        if (!origin) return cb(null, true);
+        if (ALLOWED_ORIGINS.has(origin)) return cb(null, true);
+        // Fallback: allow any local LAN origin so captive-portal quirks don't
+        // break the flow. Adjust if you need stricter CORS.
+        console.warn("[cors] origin not in allow-list, accepting anyway:", origin);
+        return cb(null, true);
+    },
+    credentials: false,
+    methods: ["GET", "POST", "OPTIONS"]
+}));
+
 app.use(express.json({ limit: "100kb" }));
 app.use(express.urlencoded({ extended: true, limit: "100kb" }));
 
-// Basic request log
+/* ---------- request log ---------- */
 app.use((req, _res, next) => {
-    console.log(new Date().toISOString(), req.method, req.originalUrl);
+    console.log(new Date().toISOString(), req.method, req.originalUrl,
+                "from", req.ip || req.connection.remoteAddress || "?");
     next();
 });
 
@@ -36,7 +76,8 @@ app.get("/health", (_req, res) => {
 });
 
 /* ---------- routes ---------- */
-app.use("/api/hotspot", hotspotRoutes);
+app.use("/api/hotspot",      hotspotRoutes);
+app.use("/api/diagnostics",  diagnosticsRoutes);
 
 /* ---------- 404 / error handlers ---------- */
 app.use((req, res) => {
@@ -47,9 +88,46 @@ app.use((err, _req, res, _next) => {
     res.status(500).json({ status: "error", code: "ER500", message: "Internal server error." });
 });
 
+/* ---------------------------------------------------------------------------
+ * Startup diagnostics
+ * ------------------------------------------------------------------------- */
+function banner() {
+    const mhost = process.env.MIKROTIK_HOST || "(unset)";
+    const mport = process.env.MIKROTIK_PORT || "8728";
+    console.log("================================================================");
+    console.log(" HAYLO backend");
+    console.log("   listening on:    http://" + HOST + ":" + PORT);
+    console.log("   BASE_URL:        " + (process.env.BASE_URL || "(unset)"));
+    console.log("   CamPay base:     " + (process.env.CAMPAY_BASE_URL || "https://demo.campay.net"));
+    console.log("   MikroTik:        " + mhost + ":" + mport);
+    console.log("   Allowed origins: " + Array.from(ALLOWED_ORIGINS).join(", "));
+    console.log("   Loaded offers:");
+    OFFERS.forEach(o => console.log("     - " + o.id + " (profile: " + o.profile + ", " + o.price + " XAF)"));
+    console.log("================================================================");
+}
+
+async function pingMikrotik() {
+    try {
+        const profiles = await mikrotik.getHotspotProfiles({ force: true });
+        if (profiles.length === 0) {
+            console.warn("[startup] MikroTik returned 0 profiles — check API access and credentials.");
+            return;
+        }
+        console.log("[startup] MikroTik OK. Profiles found: " + profiles.join(", "));
+        const expected = OFFERS.map(o => o.profile);
+        const matching = OFFERS.filter(o => profiles.indexOf(o.profile) !== -1).map(o => o.id);
+        const missing  = expected.filter(p => profiles.indexOf(p) === -1);
+        console.log("[startup] Offers matched to MikroTik profiles: " + (matching.join(", ") || "(none)"));
+        if (missing.length) {
+            console.warn("[startup] Profiles missing on router (offer.profile not found): " + missing.join(", "));
+        }
+    } catch (err) {
+        console.error("[startup] MikroTik connection FAILED:", err && err.message);
+    }
+}
+
 /* ---------- start ---------- */
-app.listen(PORT, () => {
-    console.log("HAYLO backend listening on port " + PORT);
-    console.log("CamPay base:", process.env.CAMPAY_BASE_URL || "https://demo.campay.net");
-    console.log("MikroTik:",   (process.env.MIKROTIK_HOST || "192.168.88.1") + ":" + (process.env.MIKROTIK_PORT || "8728"));
+app.listen(PORT, HOST, () => {
+    banner();
+    pingMikrotik();
 });

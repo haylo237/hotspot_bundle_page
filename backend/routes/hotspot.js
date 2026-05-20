@@ -70,18 +70,45 @@ function publicOffer(o) {
 router.get("/offers", async (_req, res) => {
     const profiles = await mikrotik.getHotspotProfiles();
     const strict   = String(process.env.OFFERS_STRICT || "").toLowerCase() === "true";
+    const isDev    = String(process.env.NODE_ENV || "").toLowerCase() !== "production";
 
-    let filtered;
+    const expected = OFFERS.map(o => o.profile);
+    const matching = OFFERS.filter(o => profiles.indexOf(o.profile) !== -1);
+    const missing  = expected.filter(p => profiles.indexOf(p) === -1);
+
+    console.log("[offers] MikroTik profiles found:", profiles.length ? profiles.join(", ") : "(none)");
+    if (missing.length) console.log("[offers] Profiles missing on router:", missing.join(", "));
+    console.log("[offers] Matching offers returned to client:",
+                matching.length ? matching.map(o => o.id).join(", ") : "(none)");
+
+    // Router unreachable + not strict → fall back to full list so portal stays usable.
     if (profiles.length === 0 && !strict) {
-        console.warn("[offers] No MikroTik profiles fetched — falling back to full offers list.");
-        filtered = OFFERS.slice();
-    } else {
-        filtered = OFFERS.filter(o => profiles.indexOf(o.profile) !== -1);
+        console.warn("[offers] No profiles fetched — returning full offers list as fallback.");
+        return res.json({
+            status: "success",
+            offers: OFFERS.map(publicOffer),
+            fallback: true
+        });
     }
 
-    res.json({
+    // Router reachable but nothing matched → surface a useful debug payload
+    // (full debug only in dev mode; production keeps it short).
+    if (matching.length === 0) {
+        const body = {
+            status:  "error",
+            message: "No matching MikroTik hotspot profiles found.",
+            mikrotik_profiles_found: profiles,
+            expected_profiles:       expected
+        };
+        if (isDev) {
+            body.hint = "Edit backend/data/offers.js so each offer.profile exactly matches a profile on the router, or create the missing profiles on MikroTik.";
+        }
+        return res.status(200).json(body);
+    }
+
+    return res.json({
         status: "success",
-        offers: filtered.map(publicOffer)
+        offers: matching.map(publicOffer)
     });
 });
 
