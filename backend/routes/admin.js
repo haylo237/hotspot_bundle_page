@@ -105,6 +105,9 @@ router.get("/", (_req, res) => {
     res.type("html").send(ADMIN_HTML);
 });
 
+// Ensure a request to /admin (no slash) reaches the page rather than 404ing.
+router.get("", (_req, res) => res.redirect("/admin/"));
+
 const ADMIN_HTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -209,7 +212,7 @@ async function load() {
     tbody.innerHTML = "";
     let data;
     try {
-        const r = await fetch("./api/profiles", { headers: { "Accept": "application/json" } });
+        const r = await fetch("/admin/api/profiles", { headers: { "Accept": "application/json" } });
         if (!r.ok) throw new Error("HTTP " + r.status);
         data = await r.json();
     } catch (e) {
@@ -264,7 +267,7 @@ async function send(tr, name, body, okMsg) {
     const btns = tr.querySelectorAll("button");
     btns.forEach(function (b) { b.disabled = true; });
     try {
-        const r = await fetch("./api/profiles/" + encodeURIComponent(name), {
+        const r = await fetch("/admin/api/profiles/" + encodeURIComponent(name), {
             method:  "POST",
             headers: { "Content-Type": "application/json" },
             body:    JSON.stringify(body)
