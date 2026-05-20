@@ -511,18 +511,11 @@
                     </div>
                 </div>
 
-                <!-- Phone + Pay -->
+                <!-- Inline hint (phone + pay moved to modal that opens on bundle selection) -->
                 <div class="pay-bar">
                     <div class="selected-summary empty" id="selectedSummary">
-                        <span>Select a bundle above to continue</span>
+                        <span>Tap a bundle above to continue</span>
                     </div>
-                    <label class="input-label" for="phoneInput">Phone Number (MTN MoMo / Orange Money)</label>
-                    <input class="input" id="phoneInput" type="tel" inputmode="numeric"
-                           placeholder="2376XXXXXXXX" maxlength="12"
-                           autocomplete="tel" disabled />
-                    <div class="field-error" id="phoneError"></div>
-                    <button class="btn btn-primary btn-block" id="payBtn"
-                            style="margin-top:6px;" onclick="payNow()" disabled>Pay Now</button>
                 </div>
             </div>
 
@@ -632,6 +625,24 @@
 </div>
 
 <!-- ===== Modals ===== -->
+<div class="modal" id="payModal" role="dialog" aria-modal="true" aria-labelledby="payModalTitle">
+    <div class="modal-card" style="max-width:440px; text-align:left;">
+        <h2 id="payModalTitle" style="text-align:center;">Confirm your purchase</h2>
+        <div class="selected-summary" id="payModalSummary" style="margin:10px 0 14px;"></div>
+
+        <label class="input-label" for="phoneInput">Phone Number (MTN MoMo / Orange Money)</label>
+        <input class="input" id="phoneInput" type="tel" inputmode="numeric"
+               placeholder="2376XXXXXXXX" maxlength="12"
+               autocomplete="tel" />
+        <div class="field-error" id="phoneError"></div>
+
+        <div class="row-actions" style="margin-top:14px; display:flex; gap:10px;">
+            <button class="btn btn-ghost"   onclick="closePayModal()" style="flex:1;">Cancel</button>
+            <button class="btn btn-primary" id="payBtn" onclick="payNow()" style="flex:2;">Pay Now</button>
+        </div>
+    </div>
+</div>
+
 <div class="modal" id="loaderModal" role="dialog" aria-modal="true" aria-labelledby="loaderTitle">
     <div class="modal-card">
         <div class="spinner" aria-hidden="true"></div>
@@ -850,15 +861,32 @@
         var picked = document.querySelector('.bundles .card[data-offer-id="' + id + '"]');
         if (picked) picked.classList.add("selected");
 
-        // Update summary + enable inputs
+        // Update inline summary
         var sum = $("selectedSummary");
         sum.classList.remove("empty");
         sum.innerHTML = '<div>Selected: <b>' + escapeHtml(o.name) + '</b> · ' + escapeHtml(o.duration) + (o.speed ? ' · ' + escapeHtml(o.speed) : '') + '</div>'
                       + '<div><b>' + (typeof o.price === "number" ? o.price : parseInt(o.price,10)||0).toLocaleString() + '</b> XAF</div>';
-        $("phoneInput").disabled = false;
-        $("payBtn").disabled = false;
+
+        // Open payment modal with phone input
+        openPayModal(o);
+    }
+
+    function openPayModal(o) {
+        var price = (typeof o.price === "number" ? o.price : parseInt(o.price,10)||0).toLocaleString();
+        $("payModalSummary").classList.remove("empty");
+        $("payModalSummary").innerHTML =
+              '<div><b>' + escapeHtml(o.name) + '</b> · ' + escapeHtml(o.duration)
+            + (o.speed ? ' · ' + escapeHtml(o.speed) : '') + '</div>'
+            + '<div><b>' + price + '</b> XAF</div>';
         $("phoneError").textContent = "";
-        setTimeout(function () { $("phoneInput").focus(); }, 50);
+        $("phoneInput").value = "";
+        $("payBtn").disabled = false;
+        openModal("payModal");
+        setTimeout(function () { $("phoneInput").focus(); }, 80);
+    }
+
+    function closePayModal() {
+        closeModal("payModal");
     }
 
     /* ================================================================
@@ -884,6 +912,7 @@
         $("phoneError").textContent = "";
 
         $("payBtn").disabled = true;
+        closePayModal();
         showLoader("Sending payment request…", "Confirm the prompt on your phone.");
 
         var body = {
@@ -1062,12 +1091,11 @@
     function backToBundles() {
         selectedOffer = null;
         $("phoneInput").value = "";
-        $("phoneInput").disabled = true;
-        $("payBtn").disabled = true;
         $("phoneError").textContent = "";
+        closePayModal();
         var sum = $("selectedSummary");
         sum.classList.add("empty");
-        sum.innerHTML = "<span>Select a bundle above to continue</span>";
+        sum.innerHTML = "<span>Tap a bundle above to continue</span>";
         document.querySelectorAll(".bundles .card.selected").forEach(function (c) { c.classList.remove("selected"); });
         switchTab("bundles");
         showPortalView();
