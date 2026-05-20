@@ -162,7 +162,7 @@ async function setProfileComment(name, comment) {
         if (!id) return { ok: false, error: "profile has no .id" };
         await api.write([
             "/ip/hotspot/user/profile/set",
-            "=.id="     + id,
+            "=numbers=" + id,
             "=comment=" + (comment == null ? "" : String(comment))
         ]);
         invalidateProfileCache();
