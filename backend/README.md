@@ -74,7 +74,7 @@ cp .env.example .env
 | `MIKROTIK_PASSWORD`  | *(secret)*                    |                                                                       |
 | `MIKROTIK_PORT`      | `8728`                        | `8729` for API-SSL                                                     |
 | `HOTSPOT_LOGIN_URL`  | `http://10.5.50.1/login`      | The hotspot login URL (used by the optional redirect helper)           |
-| `ISP_NAME`           | `HAYLO INTERNET`              | Used in CamPay description / receipts                                  |
+| `ISP_NAME`           | `NET-INFO`              | Used in CamPay description / receipts                                  |
 | `SUPPORT_PHONE`      | `+237 6XX XXX XXX`            |                                                                       |
 | `SUPPORT_EMAIL`      | `support@haylo.example`       |                                                                       |
 
