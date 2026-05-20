@@ -1,0 +1,840 @@
+<!--
+================================================================================
+  HAYLO INTERNET — MikroTik Hotspot Captive Portal (login.html)
+================================================================================
+  Purpose:
+    - Display available internet bundles
+    - Let the user select a bundle
+    - Redirect to an external payment endpoint
+    - Pass MikroTik hotspot variables ($(mac), $(ip), $(link-login), $(link-orig), $(username))
+      to the backend through URL query parameters.
+
+  Deployment:
+    - Upload this file as `login.html` into the MikroTik RouterOS hotspot folder
+      (Files > hotspot/). RouterOS will substitute the $(...) placeholders at runtime.
+    - No external network calls are required for the page to render — everything is
+      self-contained (HTML + CSS + Vanilla JS).
+
+  Notes:
+    - DO NOT add external CDN dependencies; hotspot clients may not yet have internet.
+    - All MikroTik variable substitutions are clearly marked with comments.
+    - Backend payment integration is marked with the BACKEND-INTEGRATION-POINT tag.
+================================================================================
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#0b1023" />
+    <meta name="description" content="HAYLO INTERNET — Connect to high-speed WiFi by purchasing an internet bundle." />
+    <title>HAYLO INTERNET — Connect to WiFi</title>
+
+    <!-- ============================================================
+         STYLES — Pure CSS, mobile-first, glassmorphism, dark gradient
+         ============================================================ -->
+    <style>
+        /* ---------- Reset & base ---------- */
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100%; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            color: #e8ecf8;
+            background: radial-gradient(1200px 800px at 10% -10%, #1b2a6b 0%, transparent 60%),
+                        radial-gradient(900px 700px at 110% 10%, #5a1bb1 0%, transparent 55%),
+                        linear-gradient(160deg, #05070f 0%, #0b1023 45%, #0a0a1f 100%);
+            min-height: 100vh;
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            line-height: 1.5;
+        }
+
+        /* Subtle animated glow blobs in background */
+        body::before, body::after {
+            content: "";
+            position: fixed;
+            width: 480px; height: 480px;
+            border-radius: 50%;
+            filter: blur(120px);
+            opacity: 0.45;
+            pointer-events: none;
+            z-index: 0;
+            animation: float 14s ease-in-out infinite;
+        }
+        body::before { background: #2b6cff; top: -120px; left: -120px; }
+        body::after  { background: #b53bff; bottom: -160px; right: -120px; animation-delay: -7s; }
+
+        @keyframes float {
+            0%, 100% { transform: translate(0,0) scale(1); }
+            50%      { transform: translate(40px, 30px) scale(1.05); }
+        }
+
+        /* ---------- Layout ---------- */
+        .wrap {
+            position: relative;
+            z-index: 1;
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 20px 18px 40px;
+        }
+
+        /* ---------- Header / Logo ---------- */
+        header.topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 14px 16px;
+            border-radius: 18px;
+            background: rgba(255,255,255,0.06);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border: 1px solid rgba(255,255,255,0.10);
+            box-shadow: 0 8px 30px rgba(0,0,0,0.35);
+        }
+        .logo {
+            display: flex; align-items: center; gap: 12px;
+        }
+        .logo-mark {
+            width: 42px; height: 42px;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #4f8cff 0%, #b14bff 100%);
+            display: grid; place-items: center;
+            box-shadow: 0 6px 18px rgba(79,140,255,0.35);
+        }
+        .logo-mark svg { width: 24px; height: 24px; color: #fff; }
+        .logo-text { display: flex; flex-direction: column; line-height: 1.1; }
+        .logo-text .brand { font-weight: 800; letter-spacing: 0.5px; font-size: 16px; }
+        .logo-text .tag   { font-size: 11px; color: #9aa3c7; }
+
+        .wifi-status {
+            display: flex; align-items: center; gap: 8px;
+            padding: 8px 12px;
+            background: rgba(52, 211, 153, 0.12);
+            border: 1px solid rgba(52, 211, 153, 0.35);
+            color: #6ee7b7;
+            border-radius: 999px;
+            font-size: 12px; font-weight: 600;
+        }
+        .pulse {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: #34d399;
+            box-shadow: 0 0 0 0 rgba(52,211,153,0.7);
+            animation: pulse 1.8s infinite;
+        }
+        @keyframes pulse {
+            0%   { box-shadow: 0 0 0 0 rgba(52,211,153,0.7); }
+            70%  { box-shadow: 0 0 0 10px rgba(52,211,153,0); }
+            100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); }
+        }
+
+        /* ---------- Hero / Welcome ---------- */
+        .hero {
+            text-align: center;
+            padding: 40px 10px 24px;
+        }
+        .hero h1 {
+            font-size: clamp(26px, 4.5vw, 40px);
+            font-weight: 800;
+            background: linear-gradient(90deg, #ffffff 0%, #b6c7ff 60%, #e3b9ff 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            letter-spacing: -0.5px;
+        }
+        .hero p {
+            margin-top: 10px;
+            color: #b6bedc;
+            font-size: clamp(14px, 2.2vw, 16px);
+            max-width: 620px;
+            margin-left: auto; margin-right: auto;
+        }
+
+        /* ---------- Promo banner (optional) ---------- */
+        .promo {
+            margin: 8px 0 18px;
+            padding: 12px 16px;
+            border-radius: 14px;
+            background: linear-gradient(90deg, rgba(255,193,7,0.15), rgba(255,87,34,0.15));
+            border: 1px solid rgba(255,193,7,0.30);
+            color: #ffe7a8;
+            font-size: 13px;
+            display: flex; align-items: center; gap: 10px;
+            justify-content: center; text-align: center;
+        }
+        .promo .dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: #ffc107; flex-shrink: 0;
+            box-shadow: 0 0 12px #ffc107;
+        }
+
+        /* ---------- Bundles grid ---------- */
+        .bundles {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 16px;
+            margin-top: 10px;
+        }
+        @media (min-width: 560px) { .bundles { grid-template-columns: repeat(2, 1fr); } }
+        @media (min-width: 920px) { .bundles { grid-template-columns: repeat(4, 1fr); } }
+
+        .card {
+            position: relative;
+            padding: 20px 18px;
+            border-radius: 20px;
+            background: rgba(255,255,255,0.06);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255,255,255,0.10);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+            transition: transform .25s ease, box-shadow .25s ease, border-color .25s ease;
+            overflow: hidden;
+        }
+        .card::before {
+            content: "";
+            position: absolute; inset: 0;
+            background: linear-gradient(135deg, rgba(79,140,255,0.18), rgba(177,75,255,0.10) 60%, transparent);
+            opacity: 0; transition: opacity .25s ease;
+            pointer-events: none;
+        }
+        .card:hover {
+            transform: translateY(-4px);
+            border-color: rgba(255,255,255,0.22);
+            box-shadow: 0 18px 40px rgba(0,0,0,0.45);
+        }
+        .card:hover::before { opacity: 1; }
+
+        .card .badge {
+            position: absolute; top: 12px; right: 12px;
+            font-size: 10px; font-weight: 700;
+            padding: 4px 8px; border-radius: 999px;
+            background: rgba(255,255,255,0.10);
+            color: #cfd6f0;
+            border: 1px solid rgba(255,255,255,0.15);
+            text-transform: uppercase; letter-spacing: 0.6px;
+        }
+        .card.popular .badge {
+            background: linear-gradient(90deg, #ffb84d, #ff5a8a);
+            color: #1a0a1d; border-color: transparent;
+        }
+
+        .card h3 {
+            font-size: 18px; font-weight: 700; color: #fff;
+            margin-bottom: 4px;
+        }
+        .card .duration { color: #9aa3c7; font-size: 12px; margin-bottom: 14px; }
+
+        .price {
+            display: flex; align-items: baseline; gap: 6px;
+            margin-bottom: 14px;
+        }
+        .price .amount {
+            font-size: 28px; font-weight: 800;
+            background: linear-gradient(90deg, #74a4ff, #c790ff);
+            -webkit-background-clip: text; background-clip: text; color: transparent;
+        }
+        .price .currency { font-size: 13px; color: #b6bedc; font-weight: 600; }
+
+        .features { list-style: none; margin-bottom: 16px; }
+        .features li {
+            display: flex; align-items: center; gap: 8px;
+            color: #cfd6f0; font-size: 13px;
+            padding: 5px 0;
+        }
+        .features li svg { color: #6ee7b7; width: 14px; height: 14px; flex-shrink: 0; }
+
+        .btn-buy {
+            width: 100%;
+            padding: 12px 14px;
+            border: none; cursor: pointer;
+            border-radius: 12px;
+            font-size: 14px; font-weight: 700;
+            color: #fff;
+            background: linear-gradient(135deg, #4f8cff 0%, #b14bff 100%);
+            box-shadow: 0 8px 22px rgba(79,140,255,0.35);
+            transition: transform .15s ease, box-shadow .2s ease, filter .2s ease;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .btn-buy:hover { transform: translateY(-1px); filter: brightness(1.05); }
+        .btn-buy:active { transform: translateY(0); }
+
+        /* ---------- Hotspot info (hidden by default, toggle to show) ---------- */
+        .info-toggle {
+            margin: 28px auto 0;
+            display: flex; justify-content: center;
+        }
+        .info-toggle button {
+            background: rgba(255,255,255,0.06);
+            color: #cfd6f0;
+            border: 1px solid rgba(255,255,255,0.12);
+            padding: 8px 14px; border-radius: 999px;
+            font-size: 12px; cursor: pointer;
+            transition: background .2s ease;
+        }
+        .info-toggle button:hover { background: rgba(255,255,255,0.10); }
+
+        .hotspot-info {
+            margin: 16px auto 0;
+            max-width: 560px;
+            padding: 16px 18px;
+            border-radius: 16px;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.08);
+            font-size: 13px;
+            color: #b6bedc;
+            display: none; /* hidden by default — toggled via JS */
+        }
+        .hotspot-info.open { display: block; }
+        .hotspot-info .row {
+            display: flex; justify-content: space-between; gap: 12px;
+            padding: 6px 0;
+            border-bottom: 1px dashed rgba(255,255,255,0.08);
+        }
+        .hotspot-info .row:last-child { border-bottom: none; }
+        .hotspot-info .row span:first-child { color: #9aa3c7; }
+        .hotspot-info .row span:last-child  { color: #e8ecf8; font-weight: 600; word-break: break-all; text-align: right; }
+
+        /* ---------- Footer ---------- */
+        footer {
+            margin-top: 36px;
+            text-align: center;
+            color: #8a93b7;
+            font-size: 12px;
+            padding: 10px;
+        }
+        footer .links {
+            margin-bottom: 8px;
+            display: flex; gap: 14px; justify-content: center; flex-wrap: wrap;
+        }
+        footer .links a, footer .links button {
+            color: #b6bedc; text-decoration: none;
+            background: none; border: none; cursor: pointer;
+            font-size: 12px; padding: 4px 6px;
+        }
+        footer .links a:hover, footer .links button:hover { color: #fff; text-decoration: underline; }
+
+        /* ---------- Modal (loader / payment / terms) ---------- */
+        .modal {
+            position: fixed; inset: 0;
+            background: rgba(5, 7, 15, 0.75);
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
+            display: none;
+            align-items: center; justify-content: center;
+            z-index: 100;
+            padding: 20px;
+            animation: fadeIn .2s ease;
+        }
+        .modal.open { display: flex; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+        .modal-card {
+            width: 100%; max-width: 420px;
+            padding: 26px 22px;
+            border-radius: 20px;
+            background: rgba(20, 24, 48, 0.85);
+            border: 1px solid rgba(255,255,255,0.10);
+            box-shadow: 0 24px 60px rgba(0,0,0,0.55);
+            text-align: center;
+            animation: pop .25s ease;
+        }
+        @keyframes pop { from { transform: scale(.94); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+        .modal-card h2 { font-size: 18px; margin-bottom: 8px; }
+        .modal-card p  { color: #b6bedc; font-size: 13px; margin-bottom: 14px; }
+
+        /* Loading spinner */
+        .spinner {
+            width: 48px; height: 48px;
+            margin: 4px auto 14px;
+            border-radius: 50%;
+            border: 4px solid rgba(255,255,255,0.10);
+            border-top-color: #6ea8ff;
+            animation: spin 0.9s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Success / Error icons */
+        .icon-success, .icon-error {
+            width: 56px; height: 56px;
+            border-radius: 50%;
+            display: grid; place-items: center;
+            margin: 4px auto 12px;
+        }
+        .icon-success { background: rgba(52,211,153,0.15); color: #6ee7b7; border: 1px solid rgba(52,211,153,0.4); }
+        .icon-error   { background: rgba(248,113,113,0.15); color: #fca5a5; border: 1px solid rgba(248,113,113,0.4); }
+        .icon-success svg, .icon-error svg { width: 30px; height: 30px; }
+
+        .modal-actions {
+            display: flex; gap: 10px; justify-content: center; margin-top: 8px; flex-wrap: wrap;
+        }
+        .btn {
+            padding: 10px 16px; border-radius: 10px; cursor: pointer;
+            font-size: 13px; font-weight: 600; border: none;
+            transition: filter .15s ease, transform .15s ease;
+        }
+        .btn-primary { background: linear-gradient(135deg, #4f8cff, #b14bff); color: #fff; }
+        .btn-ghost   { background: rgba(255,255,255,0.08); color: #e8ecf8; border: 1px solid rgba(255,255,255,0.15); }
+        .btn:hover   { filter: brightness(1.08); }
+        .btn:active  { transform: translateY(1px); }
+
+        /* Toast notifications */
+        .toast-wrap {
+            position: fixed; top: 16px; left: 50%;
+            transform: translateX(-50%);
+            z-index: 200;
+            display: flex; flex-direction: column; gap: 8px;
+            pointer-events: none;
+        }
+        .toast {
+            min-width: 240px; max-width: 90vw;
+            padding: 12px 16px; border-radius: 12px;
+            background: rgba(20,24,48,0.95);
+            border: 1px solid rgba(255,255,255,0.10);
+            color: #e8ecf8; font-size: 13px;
+            box-shadow: 0 10px 24px rgba(0,0,0,0.4);
+            animation: slideDown .25s ease;
+        }
+        .toast.success { border-color: rgba(52,211,153,0.45); }
+        .toast.error   { border-color: rgba(248,113,113,0.45); }
+        @keyframes slideDown { from { transform: translateY(-12px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+        /* Terms modal scroll body */
+        .terms-body {
+            text-align: left;
+            max-height: 50vh; overflow-y: auto;
+            padding: 10px 4px;
+            color: #cfd6f0; font-size: 13px;
+        }
+        .terms-body h4 { margin-top: 10px; margin-bottom: 4px; color: #fff; font-size: 13px; }
+        .terms-body p  { margin-bottom: 8px; }
+
+        /* Reduced motion */
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { animation: none !important; transition: none !important; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- Toast container (success/error notifications appear here) -->
+<div class="toast-wrap" id="toastWrap" aria-live="polite" aria-atomic="true"></div>
+
+<div class="wrap">
+
+    <!-- ============================================================
+         HEADER — Logo + Connected status
+         ============================================================ -->
+    <header class="topbar">
+        <div class="logo">
+            <div class="logo-mark" aria-hidden="true">
+                <!-- Inline SVG WiFi icon (no external dependency) -->
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M5 12.55a11 11 0 0 1 14 0"/>
+                    <path d="M1.5 9a16 16 0 0 1 21 0"/>
+                    <path d="M8.5 16.05a6 6 0 0 1 7 0"/>
+                    <circle cx="12" cy="20" r="1.2" fill="currentColor"/>
+                </svg>
+            </div>
+            <div class="logo-text">
+                <span class="brand">HAYLO INTERNET</span>
+                <span class="tag">High-Speed Public WiFi</span>
+            </div>
+        </div>
+        <div class="wifi-status" title="You are connected to the hotspot">
+            <span class="pulse" aria-hidden="true"></span>
+            <span>WiFi Connected</span>
+        </div>
+    </header>
+
+    <!-- ============================================================
+         HERO / WELCOME
+         ============================================================ -->
+    <section class="hero">
+        <h1>Welcome to HAYLO INTERNET</h1>
+        <p>You're connected to our hotspot. Choose a bundle below to unlock fast, secure internet access.</p>
+    </section>
+
+    <!-- Optional promo banner -->
+    <div class="promo" role="status">
+        <span class="dot" aria-hidden="true"></span>
+        <span>Limited offer: Get <strong>10% extra time</strong> on Weekly and Monthly bundles today!</span>
+    </div>
+
+    <!-- ============================================================
+         BUNDLES GRID
+         Each card calls selectBundle('<id>') on click of "Buy Now".
+         The id matches what the backend payment endpoint expects.
+         ============================================================ -->
+    <section class="bundles" id="bundlesGrid">
+
+        <!-- Bundle 1: 1 Hour -->
+        <article class="card" data-bundle="1hour">
+            <span class="badge">Quick</span>
+            <h3>1 Hour Pass</h3>
+            <p class="duration">Valid for 60 minutes</p>
+            <div class="price"><span class="amount">100</span><span class="currency">XAF</span></div>
+            <ul class="features">
+                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Speed up to 3 Mbps</li>
+                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> 1 device</li>
+                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Instant activation</li>
+            </ul>
+            <button class="btn-buy" onclick="selectBundle('1hour')">Buy Now</button>
+        </article>
+
+        <!-- Bundle 2: 1 Day -->
+        <article class="card" data-bundle="1day">
+            <span class="badge">Popular</span>
+            <h3>1 Day Pass</h3>
+            <p class="duration">Valid for 24 hours</p>
+            <div class="price"><span class="amount">500</span><span class="currency">XAF</span></div>
+            <ul class="features">
+                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Speed up to 5 Mbps</li>
+                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> 1 device</li>
+                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Streaming friendly</li>
+            </ul>
+            <button class="btn-buy" onclick="selectBundle('1day')">Buy Now</button>
+        </article>
+
+        <!-- Bundle 3: 1 Week -->
+        <article class="card popular" data-bundle="1week">
+            <span class="badge">Best Value</span>
+            <h3>1 Week Pass</h3>
+            <p class="duration">Valid for 7 days</p>
+            <div class="price"><span class="amount">2,000</span><span class="currency">XAF</span></div>
+            <ul class="features">
+                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Speed up to 10 Mbps</li>
+                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> 1 device</li>
+                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> HD streaming & gaming</li>
+            </ul>
+            <button class="btn-buy" onclick="selectBundle('1week')">Buy Now</button>
+        </article>
+
+        <!-- Bundle 4: 1 Month -->
+        <article class="card" data-bundle="1month">
+            <span class="badge">Premium</span>
+            <h3>1 Month Pass</h3>
+            <p class="duration">Valid for 30 days</p>
+            <div class="price"><span class="amount">5,000</span><span class="currency">XAF</span></div>
+            <ul class="features">
+                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Unlimited speed</li>
+                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> 1 device</li>
+                <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Priority support</li>
+            </ul>
+            <button class="btn-buy" onclick="selectBundle('1month')">Buy Now</button>
+        </article>
+
+    </section>
+
+    <!-- ============================================================
+         HOTSPOT INFO PANEL (hidden by default)
+         Values are injected by MikroTik RouterOS via $(...) variables.
+         ============================================================ -->
+    <div class="info-toggle">
+        <button type="button" onclick="toggleHotspotInfo()" id="infoToggleBtn">Show connection details</button>
+    </div>
+
+    <section class="hotspot-info" id="hotspotInfo" aria-hidden="true">
+        <div class="row"><span>Client IP</span><span id="infoIp">$(ip)</span></div>
+        <div class="row"><span>MAC Address</span><span id="infoMac">$(mac)</span></div>
+        <div class="row"><span>Username</span><span id="infoUser">$(username)</span></div>
+        <div class="row"><span>Router / Hotspot</span><span id="infoHost">$(hostname)</span></div>
+    </section>
+
+    <!-- ============================================================
+         FOOTER
+         ============================================================ -->
+    <footer>
+        <div class="links">
+            <button type="button" onclick="openTerms()">Terms &amp; Conditions</button>
+            <a href="tel:+237600000000">Contact Support</a>
+            <a href="mailto:support@haylo.example">support@haylo.example</a>
+        </div>
+        <div>&copy; <span id="year"></span> HAYLO INTERNET — All rights reserved.</div>
+    </footer>
+
+</div>
+
+<!-- ============================================================
+     MODAL: Payment processing (loader)
+     Shown while we prepare the redirect to the payment gateway.
+     ============================================================ -->
+<div class="modal" id="loaderModal" role="dialog" aria-modal="true" aria-labelledby="loaderTitle">
+    <div class="modal-card">
+        <div class="spinner" aria-hidden="true"></div>
+        <h2 id="loaderTitle">Preparing your payment…</h2>
+        <p id="loaderText">Securely redirecting you to the payment gateway. Please don't close this page.</p>
+    </div>
+</div>
+
+<!-- ============================================================
+     MODAL: Success (post-payment confirmation UI shell)
+     This is a UI-only success notice. The actual confirmation
+     will come from the backend after payment.
+     ============================================================ -->
+<div class="modal" id="successModal" role="dialog" aria-modal="true" aria-labelledby="successTitle">
+    <div class="modal-card">
+        <div class="icon-success" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        </div>
+        <h2 id="successTitle">Payment Successful</h2>
+        <p>Your bundle is now active. Enjoy fast internet on HAYLO!</p>
+        <div class="modal-actions">
+            <button class="btn btn-primary" onclick="closeModal('successModal')">Continue</button>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================================
+     MODAL: Error
+     ============================================================ -->
+<div class="modal" id="errorModal" role="dialog" aria-modal="true" aria-labelledby="errorTitle">
+    <div class="modal-card">
+        <div class="icon-error" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </div>
+        <h2 id="errorTitle">Something went wrong</h2>
+        <p id="errorText">We couldn't start the payment. Please try again.</p>
+        <div class="modal-actions">
+            <button class="btn btn-ghost" onclick="closeModal('errorModal')">Close</button>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================================
+     MODAL: Terms & Conditions
+     ============================================================ -->
+<div class="modal" id="termsModal" role="dialog" aria-modal="true" aria-labelledby="termsTitle">
+    <div class="modal-card">
+        <h2 id="termsTitle">Terms &amp; Conditions</h2>
+        <div class="terms-body">
+            <h4>1. Service</h4>
+            <p>HAYLO INTERNET provides time-limited internet access through prepaid bundles. Speeds are best-effort and may vary based on location and load.</p>
+            <h4>2. Acceptable Use</h4>
+            <p>You agree not to use the service for illegal activities, spamming, or attempting to bypass network security.</p>
+            <h4>3. Payments</h4>
+            <p>All bundle prices are in XAF and are non-refundable once activated. Bundles cannot be paused.</p>
+            <h4>4. Privacy</h4>
+            <p>We log your device MAC address and IP for the purposes of session management and security, in accordance with applicable regulations.</p>
+            <h4>5. Support</h4>
+            <p>For assistance, contact our support team via the email or phone listed in the footer.</p>
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-primary" onclick="closeModal('termsModal')">I understand</button>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================================
+     SCRIPTS — Vanilla JS, no frameworks, no external CDN
+     ============================================================ -->
+<script>
+    /* ----------------------------------------------------------------
+       MikroTik hotspot variables.
+       RouterOS replaces these placeholders at the time the page is served
+       to the client. They are written into JS string literals below.
+       If you preview this file outside MikroTik, the literals will remain
+       as "$(...)" — that is expected.
+       ---------------------------------------------------------------- */
+    var HOTSPOT = {
+        mac:        "$(mac)",         // Client MAC address
+        ip:         "$(ip)",          // Client IP address
+        username:   "$(username)",    // Logged-in username (if any)
+        linkLogin:  "$(link-login)",  // MikroTik login URL
+        linkOrig:   "$(link-orig)",   // Original URL the client requested
+        hostname:   "$(hostname)"     // Hotspot / Router hostname
+    };
+
+    /* ----------------------------------------------------------------
+       Backend payment endpoint configuration.
+       Replace PAYMENT_URL with your real payment gateway URL.
+       This is the BACKEND-INTEGRATION-POINT — your backend should:
+         1. Receive these query params
+         2. Create a payment session (e.g., Mobile Money, card, etc.)
+         3. After successful payment, call MikroTik's link-login URL
+            with valid credentials to grant internet access.
+       ---------------------------------------------------------------- */
+    var PAYMENT_URL = "https://yourdomain.com/pay";
+
+    /* ----------------------------------------------------------------
+       Pricing map — kept here for display logic / analytics only.
+       Authoritative pricing must be enforced server-side.
+       ---------------------------------------------------------------- */
+    var BUNDLES = {
+        "1hour":  { name: "1 Hour",  price: 100,  speed: "3 Mbps",   duration: "1 hour"  },
+        "1day":   { name: "1 Day",   price: 500,  speed: "5 Mbps",   duration: "1 day"   },
+        "1week":  { name: "1 Week",  price: 2000, speed: "10 Mbps",  duration: "7 days"  },
+        "1month": { name: "1 Month", price: 5000, speed: "Unlimited",duration: "30 days" }
+    };
+
+    /* ----------------------------------------------------------------
+       Helper: sanitize values that came from MikroTik. If the page is
+       opened outside RouterOS, the placeholders may still be present.
+       In that case we replace them with a friendly "N/A".
+       ---------------------------------------------------------------- */
+    function sanitize(value) {
+        if (!value) return "N/A";
+        // If the value still starts with "$(" it was not substituted by RouterOS.
+        if (value.indexOf("$(") === 0) return "N/A";
+        return value;
+    }
+
+    /* ----------------------------------------------------------------
+       selectBundle(bundleId)
+       Called when a user clicks "Buy Now" on a bundle card.
+       Validates the bundle, shows loader, then triggers redirect.
+       ---------------------------------------------------------------- */
+    function selectBundle(bundleId) {
+        var bundle = BUNDLES[bundleId];
+        if (!bundle) {
+            showToast("Invalid bundle selected.", "error");
+            return;
+        }
+        showLoader("Preparing your payment…",
+                   "Selected: " + bundle.name + " — " + bundle.price + " XAF");
+
+        // Small artificial delay so users see the loader; remove if undesired.
+        setTimeout(function () {
+            redirectToPayment(bundleId);
+        }, 700);
+    }
+
+    /* ----------------------------------------------------------------
+       redirectToPayment(bundleId)
+       Builds the payment URL with all required MikroTik hotspot
+       parameters and redirects the browser to the gateway.
+       === BACKEND-INTEGRATION-POINT ===
+       ---------------------------------------------------------------- */
+    function redirectToPayment(bundleId) {
+        try {
+            var params = [
+                "bundle="    + encodeURIComponent(bundleId),
+                "mac="       + encodeURIComponent(HOTSPOT.mac),
+                "ip="        + encodeURIComponent(HOTSPOT.ip),
+                "username="  + encodeURIComponent(HOTSPOT.username),
+                "linklogin=" + encodeURIComponent(HOTSPOT.linkLogin),
+                "orig="      + encodeURIComponent(HOTSPOT.linkOrig)
+            ].join("&");
+
+            var fullUrl = PAYMENT_URL + "?" + params;
+
+            // Redirect — the backend takes it from here and, on success,
+            // posts back to MikroTik's link-login to authenticate the user.
+            window.location.href = fullUrl;
+        } catch (err) {
+            hideLoader();
+            showError("We couldn't redirect you to payment. Please try again.");
+        }
+    }
+
+    /* ----------------------------------------------------------------
+       Loader controls
+       ---------------------------------------------------------------- */
+    function showLoader(title, subtitle) {
+        if (title)    document.getElementById("loaderTitle").textContent = title;
+        if (subtitle) document.getElementById("loaderText").textContent  = subtitle;
+        openModal("loaderModal");
+    }
+    function hideLoader() { closeModal("loaderModal"); }
+
+    /* ----------------------------------------------------------------
+       Generic modal controls
+       ---------------------------------------------------------------- */
+    function openModal(id)  { var el = document.getElementById(id); if (el) el.classList.add("open"); }
+    function closeModal(id) { var el = document.getElementById(id); if (el) el.classList.remove("open"); }
+
+    function showSuccess(msg) {
+        if (msg) {
+            var p = document.querySelector("#successModal p");
+            if (p) p.textContent = msg;
+        }
+        openModal("successModal");
+    }
+    function showError(msg) {
+        if (msg) document.getElementById("errorText").textContent = msg;
+        openModal("errorModal");
+    }
+    function openTerms() { openModal("termsModal"); }
+
+    /* ----------------------------------------------------------------
+       Toast notifications (auto-dismiss)
+       ---------------------------------------------------------------- */
+    function showToast(message, type) {
+        var wrap = document.getElementById("toastWrap");
+        var t = document.createElement("div");
+        t.className = "toast " + (type || "");
+        t.textContent = message;
+        wrap.appendChild(t);
+        setTimeout(function () {
+            t.style.transition = "opacity .25s ease, transform .25s ease";
+            t.style.opacity = "0";
+            t.style.transform = "translateY(-6px)";
+            setTimeout(function () { wrap.removeChild(t); }, 260);
+        }, 3200);
+    }
+
+    /* ----------------------------------------------------------------
+       Hotspot info panel toggle
+       ---------------------------------------------------------------- */
+    function toggleHotspotInfo() {
+        var panel = document.getElementById("hotspotInfo");
+        var btn   = document.getElementById("infoToggleBtn");
+        var open  = panel.classList.toggle("open");
+        panel.setAttribute("aria-hidden", open ? "false" : "true");
+        btn.textContent = open ? "Hide connection details" : "Show connection details";
+    }
+
+    /* ----------------------------------------------------------------
+       On load: populate hotspot info (sanitized) and current year.
+       ---------------------------------------------------------------- */
+    document.addEventListener("DOMContentLoaded", function () {
+        document.getElementById("infoIp").textContent   = sanitize(HOTSPOT.ip);
+        document.getElementById("infoMac").textContent  = sanitize(HOTSPOT.mac);
+        document.getElementById("infoUser").textContent = sanitize(HOTSPOT.username);
+        document.getElementById("infoHost").textContent = sanitize(HOTSPOT.hostname);
+        document.getElementById("year").textContent     = new Date().getFullYear();
+
+        // Close modals when clicking the dim background (but not the inner card)
+        document.querySelectorAll(".modal").forEach(function (m) {
+            m.addEventListener("click", function (e) {
+                if (e.target === m && m.id !== "loaderModal") {
+                    m.classList.remove("open");
+                }
+            });
+        });
+
+        // ESC key closes non-loader modals
+        document.addEventListener("keydown", function (e) {
+            if (e.key === "Escape") {
+                document.querySelectorAll(".modal.open").forEach(function (m) {
+                    if (m.id !== "loaderModal") m.classList.remove("open");
+                });
+            }
+        });
+    });
+
+    /* ----------------------------------------------------------------
+       OPTIONAL: If the backend redirects the user back to this page
+       after payment with a query string like ?status=success or
+       ?status=error&msg=..., we surface that state here.
+       ---------------------------------------------------------------- */
+    (function handleReturnFromPayment() {
+        try {
+            var qs = window.location.search;
+            if (!qs) return;
+            var params = {};
+            qs.substring(1).split("&").forEach(function (pair) {
+                var kv = pair.split("=");
+                params[decodeURIComponent(kv[0] || "")] = decodeURIComponent(kv[1] || "");
+            });
+            if (params.status === "success") {
+                showSuccess("Your bundle has been activated. Enjoy HAYLO INTERNET!");
+            } else if (params.status === "error") {
+                showError(params.msg || "Payment failed. Please try again.");
+            }
+        } catch (_) { /* ignore */ }
+    })();
+</script>
+</body>
+</html>
