@@ -46,9 +46,10 @@ function upsertOffer(offer) {
             offer.name, offer.price, offer.duration, offer.speed, offer.description, offer.active ? 1 : 0, offer.profile
         );
     } else {
-        db.prepare(`INSERT INTO offers (profile, name, price, duration, speed, description, active) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
-            offer.profile, offer.name, offer.price, offer.duration, offer.speed, offer.description, offer.active ? 1 : 0
-        );
+        db.prepare(`INSERT INTO offers (profile, name, price, duration, speed, description, active) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+            .run(
+                offer.profile, offer.name, offer.price, offer.duration, offer.speed, offer.description, offer.active ? 1 : 0
+            );
     }
 }
 
