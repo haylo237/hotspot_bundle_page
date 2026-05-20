@@ -1,41 +1,33 @@
 /**
  * routes/hotspot.js
  * ---------------------------------------------------------------------------
- *  GET   /api/hotspot/offers              → offers whose MT profile exists
+ *  GET   /api/hotspot/offers              → offers built from MikroTik profiles
  *  POST  /api/hotspot/pay                 → start CamPay collection
  *  GET   /api/hotspot/payment-status/:ref → poll; create MT user on success
  *  GET   /api/hotspot/success?reference=  → optional redirect helper
  *
+ * Offers come from MikroTik hotspot user-profiles. Each profile that should
+ * be sold must carry a JSON blob in its `comment` field — see
+ * services/mikrotikService.js (listOffers) for the schema.
+ *
  * Transactions are kept in an in-memory Map. Replace `store` with a real DB
- * for production scale — surface is small.
+ * for production scale — the surface is small.
  * ---------------------------------------------------------------------------
  */
 
 const express = require("express");
 const router  = express.Router();
 
-const OFFERS   = require("../data/offers");
 const campay   = require("../services/campayService");
 const mikrotik = require("../services/mikrotikService");
 const receipts = require("../services/receiptService");
 
-/* -------------------------------------------------------------------------
- * In-memory transaction store. Schema:
- *   { reference, externalReference, phone, offerId, amount,
- *     status: "pending"|"success"|"failed", createdAt, completedAt,
- *     username, password, receipt, mac, ip, provisioned }
- * ------------------------------------------------------------------------- */
+/* In-memory transaction store. The full offer snapshot is saved into the
+ * tx record at /pay time so /payment-status remains stable even if the
+ * profile's comment changes between purchase and provisioning. */
 const store = new Map();
 
 /* ---------- helpers ---------- */
-
-function findOffer(id) {
-    if (!id) return null;
-    for (let i = 0; i < OFFERS.length; i++) {
-        if (String(OFFERS[i].id) === String(id)) return OFFERS[i];
-    }
-    return null;
-}
 
 function validatePhoneServer(phone) {
     if (typeof phone !== "string") return false;
@@ -49,7 +41,7 @@ function sendError(res, httpStatus, code, message) {
 }
 
 function publicOffer(o) {
-    // Hide internal fields like `profile` from clients.
+    // Hide internal fields like `profile` and `order` from clients.
     return {
         id:          o.id,
         name:        o.name,
@@ -62,53 +54,42 @@ function publicOffer(o) {
 
 /* -------------------------------------------------------------------------
  * GET /api/hotspot/offers
- *   - Reads MikroTik profile list
- *   - Returns only OFFERS whose `profile` exists on the router
- *   - If MikroTik is unreachable, falls back to all OFFERS so the portal
- *     stays usable (set OFFERS_STRICT=true in .env to disable fallback)
+ *   Reads MikroTik hotspot user-profiles, parses the JSON metadata in each
+ *   profile's `comment` field, and returns the resulting bundles. Profiles
+ *   without a valid JSON comment (or marked hidden) are not exposed.
  * ------------------------------------------------------------------------- */
 router.get("/offers", async (_req, res) => {
-    const profiles = await mikrotik.getHotspotProfiles();
-    const strict   = String(process.env.OFFERS_STRICT || "").toLowerCase() === "true";
     const isDev    = String(process.env.NODE_ENV || "").toLowerCase() !== "production";
+    const profiles = await mikrotik.getHotspotProfiles();
+    const offers   = await mikrotik.listOffers();
 
-    const expected = OFFERS.map(o => o.profile);
-    const matching = OFFERS.filter(o => profiles.indexOf(o.profile) !== -1);
-    const missing  = expected.filter(p => profiles.indexOf(p) === -1);
+    console.log("[offers] MikroTik profiles found:",
+                profiles.length ? profiles.join(", ") : "(none)");
+    console.log("[offers] Saleable offers returned:",
+                offers.length ? offers.map(o => o.id + "(" + o.price + ")").join(", ") : "(none)");
 
-    console.log("[offers] MikroTik profiles found:", profiles.length ? profiles.join(", ") : "(none)");
-    if (missing.length) console.log("[offers] Profiles missing on router:", missing.join(", "));
-    console.log("[offers] Matching offers returned to client:",
-                matching.length ? matching.map(o => o.id).join(", ") : "(none)");
-
-    // Router unreachable + not strict → fall back to full list so portal stays usable.
-    if (profiles.length === 0 && !strict) {
-        console.warn("[offers] No profiles fetched — returning full offers list as fallback.");
-        return res.json({
-            status: "success",
-            offers: OFFERS.map(publicOffer),
-            fallback: true
-        });
-    }
-
-    // Router reachable but nothing matched → surface a useful debug payload
-    // (full debug only in dev mode; production keeps it short).
-    if (matching.length === 0) {
+    if (profiles.length === 0) {
         const body = {
             status:  "error",
-            message: "No matching MikroTik hotspot profiles found.",
-            mikrotik_profiles_found: profiles,
-            expected_profiles:       expected
+            message: "Cannot reach MikroTik or no hotspot user-profiles found."
         };
-        if (isDev) {
-            body.hint = "Edit backend/data/offers.js so each offer.profile exactly matches a profile on the router, or create the missing profiles on MikroTik.";
-        }
+        if (isDev) body.hint = "Check MIKROTIK_HOST/USER/PASSWORD and that /ip service api is enabled. Run GET /api/diagnostics/mikrotik for details.";
+        return res.status(503).json(body);
+    }
+
+    if (offers.length === 0) {
+        const body = {
+            status:  "error",
+            message: "No saleable bundles configured on MikroTik.",
+            mikrotik_profiles_found: profiles
+        };
+        if (isDev) body.hint = "Add a JSON comment to each profile, e.g. /ip hotspot user profile set [find name=1hour] comment=\"{\\\"price\\\":100,\\\"name\\\":\\\"1 Hour\\\"}\"";
         return res.status(200).json(body);
     }
 
     return res.json({
         status: "success",
-        offers: matching.map(publicOffer)
+        offers: offers.map(publicOffer)
     });
 });
 
@@ -123,22 +104,9 @@ router.post("/pay", async (req, res) => {
         link_login, link_login_only, link_orig
     } = req.body || {};
 
-    // ----- validation -----
-    const offer = findOffer(bundle_id);
+    const offer = await mikrotik.findOffer(bundle_id);
     if (!offer)                       return sendError(res, 400, "ER201", "Unknown bundle.");
     if (!validatePhoneServer(phone))  return sendError(res, 400, "ER101", "Invalid phone number. Use 237XXXXXXXXX.");
-
-    // Ensure the offer's MikroTik profile still exists.
-    const profileOk = await mikrotik.profileExists(offer.profile);
-    if (!profileOk) {
-        // If MT is unreachable (empty list) AND not strict, allow through;
-        // otherwise reject so we don't sell something we can't provision.
-        const profiles = await mikrotik.getHotspotProfiles();
-        const strict   = String(process.env.OFFERS_STRICT || "").toLowerCase() === "true";
-        if (!(profiles.length === 0 && !strict)) {
-            return sendError(res, 503, "ER201", "This bundle is temporarily unavailable. Please pick another.");
-        }
-    }
 
     // ----- optional carrier check -----
     try {
@@ -174,23 +142,22 @@ router.post("/pay", async (req, res) => {
     const reference = campayRes && campayRes.reference;
     if (!reference) return sendError(res, 502, "ER201", "Payment provider did not return a reference.");
 
-    // ----- persist -----
     store.set(reference, {
         reference,
         externalReference: externalRef,
         phone,
-        offerId:     offer.id,
-        amount:      offer.price,
-        status:      "pending",
-        createdAt:   new Date().toISOString(),
-        completedAt: null,
-        username:    null,
-        password:    null,
-        receipt:     null,
-        mac:         mac || null,
-        ip:          ip  || null,
-        links:       { link_login, link_login_only, link_orig },
-        provisioned: false
+        offer:        offer,            // snapshot, so /status survives profile edits
+        amount:       offer.price,
+        status:       "pending",
+        createdAt:    new Date().toISOString(),
+        completedAt:  null,
+        username:     null,
+        password:     null,
+        receipt:      null,
+        mac:          mac || null,
+        ip:           ip  || null,
+        links:        { link_login, link_login_only, link_orig },
+        provisioned:  false
     });
 
     return res.json({
@@ -204,9 +171,6 @@ router.post("/pay", async (req, res) => {
 
 /* -------------------------------------------------------------------------
  * GET /api/hotspot/payment-status/:reference
- *
- * Polls CamPay; on first SUCCESSFUL response, provisions a MikroTik user
- * idempotently and returns full credentials + bundle details.
  * ------------------------------------------------------------------------- */
 router.get("/payment-status/:reference", async (req, res) => {
     const reference = req.params.reference;
@@ -216,7 +180,6 @@ router.get("/payment-status/:reference", async (req, res) => {
     if (tx.status === "success" && tx.provisioned) return res.json(buildSuccessPayload(tx));
     if (tx.status === "failed")                    return res.json({ status: "failed", reference, message: "Payment was not completed." });
 
-    // Query CamPay
     let statusRaw;
     try {
         const data = await campay.getTransactionStatus(reference);
@@ -230,24 +193,24 @@ router.get("/payment-status/:reference", async (req, res) => {
 
     if (norm === "SUCCESSFUL") {
         if (!tx.provisioned) {
-            const offer    = findOffer(tx.offerId);
             const username = mikrotik.generateUsername();
             const password = mikrotik.generatePassword();
             const comment  = "phone:" + tx.phone + " ref:" + tx.reference;
 
             const mt = await mikrotik.createHotspotUser({
                 username, password,
-                profile: offer.profile,
+                profile: tx.offer.profile,
                 comment
             });
 
+            tx.status      = "success";
+            tx.completedAt = new Date().toISOString();
+            tx.username    = username;
+            tx.password    = password;
+            tx.receipt     = receipts.generateReceiptNumber();
+            tx.provisioned = !!mt.ok;
+
             if (!mt.ok) {
-                tx.status      = "success";
-                tx.completedAt = new Date().toISOString();
-                tx.username    = username;
-                tx.password    = password;
-                tx.receipt     = receipts.generateReceiptNumber();
-                tx.provisioned = false;
                 console.error("[status] MikroTik provisioning failed for ref", reference, mt.error);
                 return res.status(500).json({
                     status:  "error",
@@ -256,13 +219,6 @@ router.get("/payment-status/:reference", async (req, res) => {
                     reference
                 });
             }
-
-            tx.status      = "success";
-            tx.completedAt = new Date().toISOString();
-            tx.username    = username;
-            tx.password    = password;
-            tx.receipt     = receipts.generateReceiptNumber();
-            tx.provisioned = true;
         }
         return res.json(buildSuccessPayload(tx));
     }
@@ -278,7 +234,6 @@ router.get("/payment-status/:reference", async (req, res) => {
 
 /* -------------------------------------------------------------------------
  * GET /api/hotspot/success?reference=...
- * Optional helper — redirect to MikroTik login URL with credentials.
  * ------------------------------------------------------------------------- */
 router.get("/success", (req, res) => {
     const reference = req.query.reference;
@@ -287,17 +242,17 @@ router.get("/success", (req, res) => {
         return res.status(404).send("Transaction not found or not yet successful.");
     }
     const hotspotUrl = process.env.HOTSPOT_LOGIN_URL || "http://10.5.50.1/login";
-    const offer     = findOffer(tx.offerId) || {};
+    const o = tx.offer || {};
     const params = new URLSearchParams({
         paid:      "true",
         username:  tx.username,
         password:  tx.password,
-        bundle:    offer.name      || "",
+        bundle:    o.name      || "",
         amount:    String(tx.amount || ""),
-        duration:  offer.duration  || "",
-        speed:     offer.speed     || "",
+        duration:  o.duration  || "",
+        speed:     o.speed     || "",
         reference: tx.reference,
-        receipt:   tx.receipt      || "",
+        receipt:   tx.receipt  || "",
         mac:       tx.mac || "",
         ip:        tx.ip  || ""
     });
@@ -307,17 +262,17 @@ router.get("/success", (req, res) => {
 /* ---------- helpers ---------- */
 
 function buildSuccessPayload(tx) {
-    const offer = findOffer(tx.offerId) || {};
+    const o = tx.offer || {};
     return {
         status:    "success",
         reference: tx.reference,
         receipt:   tx.receipt,
         username:  tx.username,
         password:  tx.password,
-        bundle:    offer.name,
+        bundle:    o.name,
         amount:    tx.amount,
-        duration:  offer.duration,
-        speed:     offer.speed,
+        duration:  o.duration,
+        speed:     o.speed,
         mac:       tx.mac,
         ip:        tx.ip,
         date:      tx.completedAt

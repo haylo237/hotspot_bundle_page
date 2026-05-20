@@ -19,7 +19,6 @@ const cors    = require("cors");
 
 const hotspotRoutes     = require("./routes/hotspot");
 const diagnosticsRoutes = require("./routes/diagnostics");
-const OFFERS            = require("./data/offers");
 const mikrotik          = require("./services/mikrotikService");
 
 const app  = express();
@@ -101,8 +100,7 @@ function banner() {
     console.log("   CamPay base:     " + (process.env.CAMPAY_BASE_URL || "https://demo.campay.net"));
     console.log("   MikroTik:        " + mhost + ":" + mport);
     console.log("   Allowed origins: " + Array.from(ALLOWED_ORIGINS).join(", "));
-    console.log("   Loaded offers:");
-    OFFERS.forEach(o => console.log("     - " + o.id + " (profile: " + o.profile + ", " + o.price + " XAF)"));
+    console.log("   Offers source:   MikroTik hotspot user-profiles (comment JSON)");
     console.log("================================================================");
 }
 
@@ -114,12 +112,16 @@ async function pingMikrotik() {
             return;
         }
         console.log("[startup] MikroTik OK. Profiles found: " + profiles.join(", "));
-        const expected = OFFERS.map(o => o.profile);
-        const matching = OFFERS.filter(o => profiles.indexOf(o.profile) !== -1).map(o => o.id);
-        const missing  = expected.filter(p => profiles.indexOf(p) === -1);
-        console.log("[startup] Offers matched to MikroTik profiles: " + (matching.join(", ") || "(none)"));
-        if (missing.length) {
-            console.warn("[startup] Profiles missing on router (offer.profile not found): " + missing.join(", "));
+        const offers = await mikrotik.listOffers({ force: true });
+        if (offers.length === 0) {
+            console.warn("[startup] No saleable offers found. Add a JSON comment to each profile (see README).");
+            return;
+        }
+        console.log("[startup] Saleable offers loaded from profiles:");
+        offers.forEach(o => console.log("     - " + o.id + " (profile: " + o.profile + ", " + o.price + " XAF, " + o.duration + ", " + o.speed + ")"));
+        const unconfigured = profiles.filter(p => !offers.some(o => o.profile === p));
+        if (unconfigured.length) {
+            console.log("[startup] Profiles without saleable comment (ignored): " + unconfigured.join(", "));
         }
     } catch (err) {
         console.error("[startup] MikroTik connection FAILED:", err && err.message);

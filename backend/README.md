@@ -39,8 +39,6 @@ hotspot_bundle_page/
     ├── server.js              # Express entry point
     ├── package.json
     ├── .env.example           # Copy to .env and fill in
-    ├── data/
-    │   └── offers.js          # Authoritative bundle catalog (price + profile)
     ├── services/
     │   ├── campayService.js   # CamPay REST wrapper
     │   ├── mikrotikService.js # RouterOS API wrapper
@@ -78,8 +76,7 @@ cp .env.example .env
 | `MIKROTIK_PASSWORD`  | *(secret)*                    |                                                                       |
 | `MIKROTIK_PORT`      | `8728`                        | `8729` for API-SSL                                                     |
 | `HOTSPOT_LOGIN_URL`  | `http://10.5.50.1/login`      | The hotspot login URL (used by the optional redirect helper)           |
-| `OFFERS_STRICT`      | `false`                       | If `true`, `/offers` returns nothing when the router is unreachable    |
-| `NODE_ENV`           | `development`                 | When not `production`, `/offers` includes a debug hint on no-match     |
+| `NODE_ENV`           | `development`                 | When not `production`, `/offers` and diagnostics include debug hints   |
 | `ISP_NAME`           | `HAYLO INTERNET`              | Used in CamPay description / receipts                                  |
 | `SUPPORT_PHONE`      | `+237 6XX XXX XXX`            |                                                                       |
 | `SUPPORT_EMAIL`      | `support@haylo.example`       |                                                                       |
@@ -96,8 +93,8 @@ npm run dev          # auto-restart on file change (Node 18+)
 On startup the backend prints:
 - listening address (`http://0.0.0.0:<PORT>`)
 - `BASE_URL`, CamPay base, MikroTik host:port, allowed CORS origins
-- loaded offers (id, profile, price)
-- result of an initial MikroTik connection test (profiles found, matching offers, missing profiles)
+- offers source (MikroTik hotspot user-profiles, comment JSON)
+- result of an initial MikroTik connection test (profiles found, saleable offers loaded from profile comments, profiles without metadata)
 
 Sanity check:
 
@@ -123,9 +120,37 @@ add name=1week  rate-limit=10M/10M session-timeout=7d  shared-users=1
 add name=1month rate-limit=15M/15M session-timeout=30d shared-users=1
 ```
 
-Profile names **must match** the `profile` keys in `data/offers.js`. The
-`/api/hotspot/offers` endpoint compares this list with the offers file and
-returns only offers whose profile actually exists on the router.
+### 4.1.1 Attach saleable metadata to each profile (REQUIRED)
+
+The backend builds its bundle catalog by scanning every hotspot user-profile
+and reading a JSON blob from the profile's `comment` field. Profiles
+without a valid JSON comment are silently ignored (so `default` and staff
+profiles stay out of `/offers`).
+
+Set a comment on each profile you want to sell:
+
+```routeros
+/ip hotspot user profile set [find name=1hour]  comment="{\"price\":100,\"name\":\"1 Hour\",\"description\":\"Best for quick browsing\",\"order\":1}"
+/ip hotspot user profile set [find name=1day]   comment="{\"price\":500,\"name\":\"1 Day\",\"description\":\"Streaming-friendly\",\"order\":2}"
+/ip hotspot user profile set [find name=1week]  comment="{\"price\":2500,\"name\":\"1 Week\",\"description\":\"Heavy users\",\"order\":3}"
+/ip hotspot user profile set [find name=1month] comment="{\"price\":8000,\"name\":\"1 Month\",\"description\":\"Monthly plan\",\"order\":4}"
+```
+
+**JSON schema** for the comment:
+
+| Field        | Type     | Required | Default                                |
+|--------------|----------|----------|----------------------------------------|
+| `price`      | number   | YES      | — (must be ≥ 0)                       |
+| `name`       | string   | no       | profile name                           |
+| `id`         | string   | no       | profile name                           |
+| `description`| string   | no       | empty                                  |
+| `speed`      | string   | no       | derived from `rate-limit` (e.g. `3Mbps`) |
+| `duration`   | string   | no       | derived from `session-timeout`          |
+| `order`      | number   | no       | offers sort by `order` ASC then price   |
+| `hidden`     | boolean  | no       | if `true`, profile is excluded          |
+
+Changes to comments are picked up automatically (60s cache). Hit
+`/api/diagnostics/mikrotik` to force-refresh and inspect what was parsed.
 
 ### 4.2 Create a dedicated API user (recommended)
 
@@ -258,7 +283,7 @@ Error codes: `ER101` invalid phone · `ER102` unsupported carrier ·
 `ER201` invalid amount / bundle · `ER301` insufficient balance ·
 `ER999` payment OK but provisioning failed.
 
-The backend uses `bundle_id` to look up the price from `data/offers.js` —
+The backend uses `bundle_id` to look up the price from the MikroTik profile's JSON comment —
 **the price sent from the frontend is ignored**.
 
 ### `GET /api/hotspot/payment-status/:reference`
@@ -292,21 +317,19 @@ string so the portal can show the success view directly.
 ### `GET /api/diagnostics/mikrotik`
 
 Returns whether the backend can reach the MikroTik API, the list of
-profiles found, which offers match, and which profiles are missing. Use
-this from the mini-server itself or from a client browser when offers do
-not appear in the portal.
+profiles found, which ones are saleable (carry a valid JSON metadata
+comment), and which ones are unconfigured. Use this from the mini-server
+itself or from a client browser when offers do not appear in the portal.
 
 ```json
 {
   "status": "success",
-  "message": "MikroTik reachable and 4 offer(s) match router profiles.",
+  "message": "MikroTik reachable. 4 saleable bundle(s) loaded from profile comments.",
   "mikrotik": { "host": "10.5.50.1", "port": 8728, "connected": true, "api_login": "ok" },
-  "offers_file":             [{ "id": "1hour", "profile": "1hour" }],
-  "mikrotik_profiles_found": ["default", "1hour", "1day", "1week", "1month"],
-  "expected_profiles":       ["1hour", "1day", "1week", "1month"],
-  "matching_offers":         [{ "id": "1hour", "profile": "1hour", "price": 100 }],
-  "missing_profiles":        [],
-  "extra_router_profiles":   ["default"]
+  "profiles_found":         ["default", "1hour", "1day", "1week", "1month"],
+  "saleable_offers":        [{ "id": "1hour", "name": "1 Hour", "price": 100, "duration": "1h", "speed": "3Mbps", "profile": "1hour" }],
+  "unconfigured_profiles":  ["default"],
+  "example_comment_to_set": "{\"price\":100,\"name\":\"1 Hour\",\"description\":\"Best for quick browsing\"}"
 }
 ```
 
@@ -319,9 +342,9 @@ and a list of hints. Passwords and tokens are **never** included.
 
 1. `cd backend && npm install && cp .env.example .env`
 2. Set `CAMPAY_TOKEN` (demo token from CamPay dashboard).
-3. Set `MIKROTIK_*` to a reachable router (or leave it — `/offers` falls
-   back to the full list when the router is unreachable and `OFFERS_STRICT`
-   is not `true`).
+3. Set `MIKROTIK_*` to a reachable router and add a JSON `comment` to
+   each profile you want to sell (see §4.1.1). If the router is
+   unreachable or no profile carries metadata, `/offers` returns an error.
 4. `npm start`
 5. Open `login.html` in a browser with `BACKEND_BASE_URL` pointing at your
    local backend (e.g. `http://10.5.50.2:3000`).
@@ -394,9 +417,10 @@ curl http://10.5.50.2:3000/api/diagnostics/mikrotik | jq
 
 | Symptom | Likely cause |
 |--------|--------------|
-| Portal stuck on skeleton bundles                | `BACKEND_BASE_URL` wrong in `login.html`, backend not running, or walled-garden missing the `10.5.50.2 tcp 3000` rule |
+| `Portal stuck on skeleton bundles`              | `BACKEND_BASE_URL` wrong in `login.html`, backend not running, or walled-garden missing the `10.5.50.2 tcp 3000` rule |
 | `Could not reach the server`                    | Mini-server firewall blocks port 3000, or backend not bound to `0.0.0.0` |
-| `No matching MikroTik hotspot profiles found`   | Profile names in `data/offers.js` don't match what's on the router. Check the `mikrotik_profiles_found` field in the response |
+| `No saleable bundles configured on MikroTik`    | At least one profile exists on the router but none has a valid JSON `comment`. Run `/ip hotspot user profile print` and follow §4.1.1 |
+| `Cannot reach MikroTik or no hotspot user-profiles found` | Backend cannot log into RouterOS API. Check `MIKROTIK_*` creds, `/ip service api`, and firewall |
 | Diagnostics: `Cannot reach MikroTik API`        | `MIKROTIK_HOST` wrong, API service disabled (`/ip service`), or wrong credentials |
 | `ER101 Invalid phone number`                    | Phone not in `237XXXXXXXXX` form |
 | `ER102 Unsupported carrier`                     | CamPay `holder_info` returned a non-MTN/Orange carrier |
@@ -411,7 +435,7 @@ curl http://10.5.50.2:3000/api/diagnostics/mikrotik | jq
 3. Firewall on the mini-server allows port 3000 from the hotspot subnet
 4. MikroTik API is enabled (`/ip service print`)
 5. MikroTik credentials in `.env` work (run the diagnostic endpoint)
-6. Profile names in `data/offers.js` match exactly with MikroTik hotspot profiles
+6. Each profile you want to sell has a valid JSON `comment` (see §4.1.1)
 7. Walled-garden rule allows clients to reach `10.5.50.2:3000`
 
 ---
